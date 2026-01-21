@@ -30,6 +30,15 @@ def is_already_running():
         return True, None
 
 # ============== CONFIGURATION ==============
+# Get the directory where the exe/script is located
+def get_app_dir():
+    if getattr(sys, 'frozen', False):
+        # Running as compiled exe
+        return os.path.dirname(sys.executable)
+    else:
+        # Running as script
+        return os.path.dirname(os.path.abspath(__file__))
+
 # Load API key from environment variable or .env file
 def load_api_key():
     # First, try environment variable
@@ -37,8 +46,8 @@ def load_api_key():
     if api_key:
         return api_key
 
-    # Then, try .env file in the same directory
-    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
+    # Then, try .env file in the same directory as exe/script
+    env_path = os.path.join(get_app_dir(), '.env')
     if os.path.exists(env_path):
         with open(env_path, 'r') as f:
             for line in f:
@@ -51,13 +60,20 @@ def load_api_key():
 GEMINI_API_KEY = load_api_key()
 
 if not GEMINI_API_KEY:
-    print("ERROR: GEMINI_API_KEY not found!")
-    print("Please set it in one of the following ways:")
-    print("  1. Create a .env file with: GEMINI_API_KEY=your_api_key")
-    print("  2. Set environment variable: set GEMINI_API_KEY=your_api_key")
-    print("")
-    print("Get your API key at: https://aistudio.google.com/app/apikey")
-    input("Press Enter to exit...")
+    # Show error using GUI (works with --windowed exe)
+    import tkinter as tk
+    from tkinter import messagebox
+    root = tk.Tk()
+    root.withdraw()
+    messagebox.showerror(
+        "Gemini Translator - API Key Missing",
+        "GEMINI_API_KEY not found!\n\n"
+        "Please create a .env file in the same folder as this app with:\n"
+        "GEMINI_API_KEY=your_api_key\n\n"
+        "Get your free API key at:\n"
+        "https://aistudio.google.com/app/apikey"
+    )
+    root.destroy()
     sys.exit(1)
 
 # Available languages
