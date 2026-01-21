@@ -1,0 +1,6 @@
+pyperclip==1.8.2
+google-generativeai==0.8.3
+pystray==0.19.5
+Pillow==12.1.0
+pynput==1.7.7
+pyautogui
