@@ -49,3 +49,9 @@ desktop.ini
 *.backup
 *_backup*
 backup/
+
+# Executables
+*.exe
+
+# Claude Code settings
+.claude/
