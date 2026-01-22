@@ -1,5 +1,5 @@
 """
-Configuration management for Gemini Translator v1.2.0
+Configuration management for AI Translator v1.4.0
 Handles API key, hotkeys, auto-start settings, and other preferences.
 """
 import os
@@ -10,9 +10,12 @@ from typing import Optional, Dict, Any
 
 
 class Config:
-    """Manages application configuration stored in %APPDATA%/GeminiTranslator/config.json"""
+    """Manages application configuration stored in %APPDATA%/AITranslator/config.json
 
-    APP_NAME = "GeminiTranslator"
+    Note: APP_NAME kept as 'AITranslator' for backward compatibility with existing configs.
+    """
+
+    APP_NAME = "AITranslator"
     CONFIG_DIR = os.path.join(os.environ.get('APPDATA', '.'), APP_NAME)
     CONFIG_FILE = os.path.join(CONFIG_DIR, 'config.json')
 
@@ -23,11 +26,16 @@ class Config:
         "Chinese Simplified": "win+alt+c"
     }
 
+    # Languages that can be added as custom hotkeys
+    DEFAULT_LANGUAGES = ["Vietnamese", "English", "Japanese", "Chinese Simplified"]
+    MAX_CUSTOM_HOTKEYS = 4  # Max 4 additional custom hotkeys
+
     DEFAULT_CONFIG = {
-        "api_key": "",
+        "api_keys": [],  # List of {model_name, api_key} dicts
         "hotkeys": DEFAULT_HOTKEYS.copy(),
+        "custom_hotkeys": {},  # Custom language hotkeys (max 4)
         "autostart": False,
-        "check_updates": True,
+        "check_updates": False,  # Default to False
         "theme": "darkly"
     }
 
@@ -66,18 +74,43 @@ class Config:
             json.dump(self._config, f, indent=2, ensure_ascii=False)
 
     # API Key management
-    def get_api_key(self) -> str:
-        """Get API key from config, environment variable, or .env file."""
-        # Priority 1: Config file
-        if self._config.get('api_key'):
-            return self._config['api_key']
+    def get_api_keys(self) -> list:
+        """Get all API keys with their models.
+        Returns list of dicts: [{model_name, api_key}, ...]
+        """
+        # If 'api_keys' is explicitly set (even empty), return it
+        if 'api_keys' in self._config:
+            return self._config['api_keys']
 
-        # Priority 2: Environment variable
+        # Migration: Check for old singular keys if list is missing
+        api_keys = []
+        primary = self._config.get('api_key')
+        if primary:
+            api_keys.append({'model_name': '', 'api_key': primary})
+        backup = self._config.get('backup_api_key')
+        if backup:
+            api_keys.append({'model_name': '', 'api_key': backup})
+                
+        return api_keys
+
+    def set_api_keys(self, api_keys: list):
+        """Set all API keys with their models.
+        api_keys: list of dicts [{model_name, api_key}, ...]
+        """
+        self._config['api_keys'] = api_keys
+        self.save()
+
+    def get_api_key(self) -> str:
+        """Get first API key (for backward compatibility)."""
+        api_keys = self.get_api_keys()
+        if api_keys:
+            return api_keys[0]['api_key']
+        
+        # Fallback to environment variable or .env file
         api_key = os.environ.get('GEMINI_API_KEY')
         if api_key:
             return api_key
 
-        # Priority 3: .env file in app directory
         env_path = os.path.join(self._get_app_dir(), '.env')
         if os.path.exists(env_path):
             try:
@@ -91,10 +124,14 @@ class Config:
 
         return ""
 
-    def set_api_key(self, api_key: str):
-        """Set API key in config."""
-        self._config['api_key'] = api_key
-        self.save()
+    def set_api_key(self, api_key: str, model_name: str = "gemini-2.0-flash-lite"):
+        """Set first API key with model."""
+        api_keys = self.get_api_keys()
+        if api_keys:
+            api_keys[0] = {'model_name': model_name, 'api_key': api_key}
+        else:
+            api_keys = [{'model_name': model_name, 'api_key': api_key}]
+        self.set_api_keys(api_keys)
 
     def _get_app_dir(self) -> str:
         """Get the directory where the exe/script is located."""
@@ -124,6 +161,40 @@ class Config:
         if 'hotkeys' in self._config and language in self._config['hotkeys']:
             del self._config['hotkeys'][language]
             self.save()
+
+    # Custom hotkeys management
+    def get_custom_hotkeys(self) -> Dict[str, str]:
+        """Get custom hotkey configuration."""
+        return self._config.get('custom_hotkeys', {})
+
+    def set_custom_hotkey(self, language: str, hotkey: str):
+        """Set a custom hotkey for a language."""
+        if 'custom_hotkeys' not in self._config:
+            self._config['custom_hotkeys'] = {}
+        if len(self._config['custom_hotkeys']) < self.MAX_CUSTOM_HOTKEYS or language in self._config['custom_hotkeys']:
+            self._config['custom_hotkeys'][language] = hotkey
+            self.save()
+
+    def remove_custom_hotkey(self, language: str):
+        """Remove a custom hotkey."""
+        if 'custom_hotkeys' in self._config and language in self._config['custom_hotkeys']:
+            del self._config['custom_hotkeys'][language]
+            self.save()
+
+    def get_all_hotkeys(self) -> Dict[str, str]:
+        """Get all hotkeys (default + custom)."""
+        all_hotkeys = self.get_hotkeys().copy()
+        all_hotkeys.update(self.get_custom_hotkeys())
+        return all_hotkeys
+
+    def restore_defaults(self):
+        """Restore all settings to defaults except API keys."""
+        api_keys = self._config.get('api_keys', [])
+        self._config = self.DEFAULT_CONFIG.copy()
+        self._config['hotkeys'] = self.DEFAULT_HOTKEYS.copy()
+        self._config['custom_hotkeys'] = {}
+        self._config['api_keys'] = api_keys  # Preserve API keys with models
+        self.save()
 
     # Auto-start management
     def get_autostart(self) -> bool:
@@ -157,7 +228,15 @@ class Config:
         """Get the path to use for auto-start."""
         if getattr(sys, 'frozen', False):
             return sys.executable
-        return f'pythonw.exe "{os.path.abspath(__file__.replace("config.py", "translator.py"))}"'
+        
+        # Use absolute path to pythonw.exe to ensure reliability
+        python_dir = os.path.dirname(sys.executable)
+        pythonw = os.path.join(python_dir, 'pythonw.exe')
+        if not os.path.exists(pythonw):
+            pythonw = sys.executable
+            
+        script_path = os.path.abspath(os.path.join(os.path.dirname(__file__), 'translator.py'))
+        return f'"{pythonw}" "{script_path}"'
 
     def is_autostart_enabled(self) -> bool:
         """Check if auto-start is currently enabled in registry."""

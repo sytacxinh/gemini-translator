@@ -1,6 +1,6 @@
-# Gemini Translator
+# AI Translator
 
-A Windows desktop application for instant text translation using Google's Gemini AI. Select any text, press a hotkey, and get translations in a compact tooltip - no window switching needed!
+A Windows desktop application for instant text translation using advanced AI models (Google Gemini, OpenAI, DeepSeek, Groq, Claude, etc.). Select any text, press a hotkey, and get translations in a compact tooltip - no window switching needed!
 
 ## Features
 
@@ -11,23 +11,28 @@ A Windows desktop application for instant text translation using Google's Gemini
 - `Win+Alt+C` → Chinese Simplified
 - **Customizable hotkeys** in Settings
 
-### Modern UI (v1.2.0)
+### Modern UI
 - **Smart tooltip sizing** - Auto-adjusts based on text length (max 800px wide)
 - **Dark theme** with modern ttkbootstrap styling
 - **Hidden scrollbars** - Clean look with scroll functionality
 - **Custom prompts** - Add instructions like "Make it formal" or "Use casual tone"
 - **Currency conversion** - Automatically converts currencies to target language's local currency
 
-### Settings (New in v1.2.0)
-- **GUI API Key Setup** - No more manual .env editing
+### Multi-Provider Support
+- **Supports multiple AI providers**: Google Gemini, OpenAI, Anthropic (Claude), DeepSeek, Groq, xAI (Grok), Mistral, Perplexity, and more.
+- **Smart Routing**: Automatically detects provider based on API key format or model name.
+- **Failover System**: Configure primary and backup keys to ensure uninterrupted service.
+
+### Settings
+- **GUI API Key Setup** - Easy configuration for multiple providers
 - **Custom Hotkeys** - Record any key combination for any language
 - **Start with Windows** - One-click auto-start toggle
 - **Test Connection** - Verify your API key works
 
 ### Additional Features
-- **30+ Languages** supported
+- **100+ Languages** supported (Google Translate standard)
 - **System tray** - Runs quietly in background
-- **Open in Gemini** - Quick access to Gemini web for complex translations
+- **Open in Web** - Quick access to Gemini web for complex translations
 - **Auto-update check** - Get notified when new versions are available
 - **Single instance** - Prevents multiple instances running
 - **Clipboard preservation** - Preserves your clipboard content (files/images)
@@ -49,8 +54,8 @@ A Windows desktop application for instant text translation using Google's Gemini
 
 ### Option 1: Download .exe (Recommended)
 
-1. Go to [Releases](https://github.com/sytacxinh/gemini-translator/releases)
-2. Download `GeminiTranslator.exe`
+1. Go to [Releases](https://github.com/sytacxinh/ai-translator/releases)
+2. Download `AITranslator.exe`
 3. Run the application
 4. On first run, Settings will open - enter your API key
 5. Get your free API key at: https://aistudio.google.com/app/apikey
@@ -59,7 +64,7 @@ A Windows desktop application for instant text translation using Google's Gemini
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/sytacxinh/gemini-translator.git
+   git clone https://github.com/sytacxinh/ai-translator.git
    cd gemini-translator
    ```
 
@@ -94,7 +99,7 @@ A Windows desktop application for instant text translation using Google's Gemini
 
 ## Usage
 
-1. **Start the app** - It will minimize to system tray (look for "GT" icon)
+1. **Start the app** - It will minimize to system tray (look for "AI" icon)
 
 2. **Translate text**:
    - Select any text in any application
@@ -113,7 +118,7 @@ A Windows desktop application for instant text translation using Google's Gemini
 4. **Full Translator window**:
    - Click "Open Translator" from tray menu or tooltip
    - Edit original text
-   - Choose any of 30+ languages
+   - Choose any of 100+ languages
    - Add custom prompt for special translation styles
    - Re-translate with different settings
    - Open in Gemini web for complex queries
@@ -129,11 +134,11 @@ A Windows desktop application for instant text translation using Google's Gemini
 **Method A: Settings (Recommended)**
 1. Right-click tray icon → Settings
 2. Go to General tab
-3. Check "Start Gemini Translator with Windows"
+3. Check "Start AI Translator with Windows"
 
 **Method B: Manual**
 1. Press `Win + R`, type `shell:startup`, press Enter
-2. Create a shortcut to `GeminiTranslator.exe` in that folder
+2. Create a shortcut to `AITranslator.exe` in that folder
 
 ## Configuration
 
@@ -168,10 +173,10 @@ packaging==24.0
 
 ## Troubleshooting
 
-### "GEMINI_API_KEY not found" or API Error
+### API Error / Connection Failed
 1. Open Settings and enter your API key
-2. Click "Test Connection" to verify
-3. Or create a `.env` file with `GEMINI_API_KEY=your_key`
+2. Ensure you selected the correct **Provider** for your key (e.g., select "DeepSeek" for DeepSeek keys).
+3. Click "Test" to verify the connection.
 
 ### Translation not working
 - Check if text is actually selected (try Ctrl+C manually)

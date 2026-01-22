@@ -3,6 +3,6 @@ google-generativeai==0.8.3
 pystray==0.19.5
 Pillow==12.1.0
 ttkbootstrap==1.10.1
-pywin32
+pywin32==311
 keyboard==0.13.5
 packaging==24.0
