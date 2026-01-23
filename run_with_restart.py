@@ -32,8 +32,8 @@ MIN_RUN_TIME = 60         # Consider crash if app runs less than 60 seconds
 RESTART_DELAY = 5         # Seconds to wait before restarting
 
 def get_script_path():
-    """Get the path to translator.py"""
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), 'translator.py')
+    """Get the path to main.py"""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), 'main.py')
 
 def run_translator():
     """Run the translator and return exit code."""

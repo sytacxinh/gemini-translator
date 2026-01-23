@@ -3,6 +3,7 @@ Settings Window for AI Translator.
 """
 import os
 import sys
+import gc
 import threading
 import webbrowser
 
@@ -338,7 +339,10 @@ class SettingsWindow:
             row['key_var'].set("")
 
         # Save immediately as requested
-        self._save_api_keys_to_config()
+        self._save_api_keys_to_config(secure=True)
+        
+        # Force garbage collection to clear strings from RAM immediately
+        gc.collect()
 
         if HAS_TTKBOOTSTRAP:
             Messagebox.show_info("All API keys have been cleared and saved.", title="Keys Cleared", parent=self.window)
@@ -346,7 +350,7 @@ class SettingsWindow:
             from tkinter import messagebox
             messagebox.showinfo("Keys Cleared", "All API keys have been cleared and saved.", parent=self.window)
 
-    def _save_api_keys_to_config(self):
+    def _save_api_keys_to_config(self, secure=False):
         """Save current API keys to config."""
         try:
             api_keys_list = []
@@ -359,7 +363,7 @@ class SettingsWindow:
                     model = ''
                 if model or key:  # Only save if there's actual data
                     api_keys_list.append({'model_name': model, 'api_key': key, 'provider': provider})
-            self.config.set_api_keys(api_keys_list)
+            self.config.set_api_keys(api_keys_list, secure=secure)
         except Exception as e:
             print(f"Error saving API keys to config: {e}")
             import traceback

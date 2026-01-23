@@ -3,6 +3,7 @@ Clipboard management for AI Translator.
 Handles saving, restoring, and manipulating clipboard content.
 """
 import logging
+import time
 from typing import Optional, Dict, Any
 
 import pyperclip
@@ -29,7 +30,17 @@ class ClipboardManager:
                 return None
 
         try:
-            win32clipboard.OpenClipboard()
+            # Retry opening clipboard (it might be locked by another app)
+            for _ in range(5):
+                try:
+                    win32clipboard.OpenClipboard()
+                    break
+                except Exception:
+                    time.sleep(0.01)
+            else:
+                # Failed after retries
+                return None
+
             formats = []
             fmt = win32clipboard.EnumClipboardFormats(0)
             while fmt:
@@ -67,7 +78,15 @@ class ClipboardManager:
             return
 
         try:
-            win32clipboard.OpenClipboard()
+            for _ in range(5):
+                try:
+                    win32clipboard.OpenClipboard()
+                    break
+                except Exception:
+                    time.sleep(0.01)
+            else:
+                return
+
             win32clipboard.EmptyClipboard()
             for fmt, data in saved.items():
                 try:
@@ -87,7 +106,17 @@ class ClipboardManager:
         """Set clipboard to text."""
         if HAS_WIN32:
             try:
-                win32clipboard.OpenClipboard()
+                for _ in range(5):
+                    try:
+                        win32clipboard.OpenClipboard()
+                        break
+                    except Exception:
+                        time.sleep(0.01)
+                else:
+                    # Fallback if open fails
+                    pyperclip.copy(text)
+                    return
+
                 win32clipboard.EmptyClipboard()
                 win32clipboard.SetClipboardText(text, win32con.CF_UNICODETEXT)
             except:

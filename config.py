@@ -1,5 +1,5 @@
 """
-Configuration management for AI Translator v1.4.0
+Configuration management for AI Translator v1.5.0
 Handles API key, hotkeys, auto-start settings, and other preferences.
 """
 import os
@@ -67,11 +67,25 @@ class Config:
 
         return self._config
 
-    def save(self):
+    def save(self, secure: bool = False):
         """Save configuration to file."""
         self._ensure_config_dir()
+        
+        # Secure overwrite: write zeros to the file before truncating if secure delete is requested
+        if secure and os.path.exists(self.CONFIG_FILE):
+            try:
+                file_size = os.path.getsize(self.CONFIG_FILE)
+                with open(self.CONFIG_FILE, "rb+") as f:
+                    f.write(b"\0" * file_size)
+                    f.flush()
+                    os.fsync(f.fileno())
+            except Exception:
+                pass
+
         with open(self.CONFIG_FILE, 'w', encoding='utf-8') as f:
             json.dump(self._config, f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno()) # Force write to disk immediately
 
     # API Key management
     def get_api_keys(self) -> list:
@@ -93,12 +107,12 @@ class Config:
                 
         return api_keys
 
-    def set_api_keys(self, api_keys: list):
+    def set_api_keys(self, api_keys: list, secure: bool = False):
         """Set all API keys with their models.
         api_keys: list of dicts [{model_name, api_key}, ...]
         """
         self._config['api_keys'] = api_keys
-        self.save()
+        self.save(secure=secure)
 
     def get_api_key(self) -> str:
         """Get first API key (for backward compatibility)."""
@@ -106,22 +120,10 @@ class Config:
         if api_keys:
             return api_keys[0]['api_key']
         
-        # Fallback to environment variable or .env file
+        # Fallback to environment variable (system level only)
         api_key = os.environ.get('GEMINI_API_KEY')
         if api_key:
             return api_key
-
-        env_path = os.path.join(self._get_app_dir(), '.env')
-        if os.path.exists(env_path):
-            try:
-                with open(env_path, 'r') as f:
-                    for line in f:
-                        line = line.strip()
-                        if line.startswith('GEMINI_API_KEY='):
-                            return line.split('=', 1)[1].strip().strip('"\'')
-            except IOError:
-                pass
-
         return ""
 
     def set_api_key(self, api_key: str, model_name: str = "gemini-2.0-flash-lite"):
@@ -235,7 +237,7 @@ class Config:
         if not os.path.exists(pythonw):
             pythonw = sys.executable
             
-        script_path = os.path.abspath(os.path.join(os.path.dirname(__file__), 'translator.py'))
+        script_path = os.path.abspath(os.path.join(os.path.dirname(__file__), 'main.py'))
         return f'"{pythonw}" "{script_path}"'
 
     def is_autostart_enabled(self) -> bool:

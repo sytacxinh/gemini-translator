@@ -1,71 +1,64 @@
 # AI Translator
 
+![Version](https://img.shields.io/badge/version-1.5.0-blue.svg)
+![Python](https://img.shields.io/badge/python-3.10+-yellow.svg)
+![License](https://img.shields.io/badge/license-MIT-green.svg)
+![Platform](https://img.shields.io/badge/platform-Windows-informational.svg)
+
 A Windows desktop application for instant text translation using advanced AI models (Google Gemini, OpenAI, DeepSeek, Groq, Claude, etc.). Select any text, press a hotkey, and get translations in a compact tooltip - no window switching needed!
 
 ## Features
 
 ### Quick Translation Hotkeys
-- `Win+Alt+V` → Vietnamese
-- `Win+Alt+E` → English
-- `Win+Alt+J` → Japanese
-- `Win+Alt+C` → Chinese Simplified
-- **Customizable hotkeys** in Settings
+*   `Win+Alt+V` → Vietnamese
+*   `Win+Alt+E` → English
+*   `Win+Alt+J` → Japanese
+*   `Win+Alt+C` → Chinese Simplified
+*   **Customizable hotkeys**: Record any key combination for any language in Settings.
 
 ### Modern UI
-- **Smart tooltip sizing** - Auto-adjusts based on text length (max 800px wide)
-- **Dark theme** with modern ttkbootstrap styling
-- **Hidden scrollbars** - Clean look with scroll functionality
-- **Custom prompts** - Add instructions like "Make it formal" or "Use casual tone"
-- **Currency conversion** - Automatically converts currencies to target language's local currency
+*   **Smart tooltip sizing**: Auto-adjusts based on text length.
+*   **Dark theme**: Modern look with `ttkbootstrap`.
+*   **Custom prompts**: Add instructions like "Make it formal" or "Use casual tone".
+*   **Currency conversion**: Automatically converts currencies to target language's local currency.
 
 ### Multi-Provider Support
-- **Supports multiple AI providers**: Google Gemini, OpenAI, Anthropic (Claude), DeepSeek, Groq, xAI (Grok), Mistral, Perplexity, and more.
-- **Smart Routing**: Automatically detects provider based on API key format or model name.
-- **Failover System**: Configure primary and backup keys to ensure uninterrupted service.
+*   **Supports multiple AI providers**: Google Gemini, OpenAI, Anthropic (Claude), DeepSeek, Groq, xAI (Grok), Mistral, Perplexity, etc.
+*   **Smart Routing**: Automatically detects provider based on API key format or model name.
+*   **Failover System**: Configure multiple keys to ensure uninterrupted service.
 
 ### Settings
-- **GUI API Key Setup** - Easy configuration for multiple providers
-- **Custom Hotkeys** - Record any key combination for any language
-- **Start with Windows** - One-click auto-start toggle
-- **Test Connection** - Verify your API key works
+-   **GUI API Key Setup**: Easy configuration for multiple providers.
+-   **Start with Windows**: One-click auto-start toggle.
+-   **Test Connection**: Verify your API key works immediately.
 
 ### Additional Features
-- **100+ Languages** supported (Google Translate standard)
-- **System tray** - Runs quietly in background
-- **Open in Web** - Quick access to Gemini web for complex translations
-- **Auto-update check** - Get notified when new versions are available
-- **Single instance** - Prevents multiple instances running
-- **Clipboard preservation** - Preserves your clipboard content (files/images)
-
-## Screenshots
-
-<!-- Add screenshots here -->
-<!-- ![Tooltip](assets/tooltip.png) -->
-<!-- ![Full Window](assets/full-window.png) -->
-<!-- ![Settings](assets/settings.png) -->
+-   **100+ Languages** supported.
+-   **System tray**: Runs quietly in background.
+-   **Open in Web**: Quick access to Gemini web for complex translations.
+-   **Auto-update check**: Get notified when new versions are available.
+-   **Clipboard preservation**: Preserves your clipboard content (files/images) after translation.
 
 ## Installation
 
 ### Prerequisites
-
 - Python 3.10 or higher
 - Windows 10/11
-- Gemini API key (free)
+- An API key (Google Gemini is free!)
 
 ### Option 1: Download .exe (Recommended)
-
-1. Go to [Releases](https://github.com/sytacxinh/ai-translator/releases)
+1. Go to Releases
 2. Download `AITranslator.exe`
 3. Run the application
 4. On first run, Settings will open - enter your API key
-5. Get your free API key at: https://aistudio.google.com/app/apikey
+5. Get your free Gemini API key at: https://aistudio.google.com/app/apikey
 
 ### Option 2: Run from source
 
 1. **Clone the repository**
    ```bash
    git clone https://github.com/sytacxinh/ai-translator.git
-   cd gemini-translator
+   cd ai-translator
    ```
 
 2. **Install dependencies**
@@ -74,11 +67,10 @@ A Windows desktop application for instant text translation using advanced AI mod
    ```
 
 3. **Get your Gemini API key**
-   - Go to [Google AI Studio](https://aistudio.google.com/app/apikey)
+   - Go to Google AI Studio
    - Create a new API key (it's free!)
 
 4. **Configure API key** (choose one method)
-
    **Method A: Settings GUI (Recommended)**
    - Run the application
    - Click "Open Settings" when prompted
@@ -92,10 +84,9 @@ A Windows desktop application for instant text translation using advanced AI mod
 
 5. **Run the application**
    ```bash
-   python translator.py
+   python main.py
    ```
-
-   Or double-click `run_silent.vbs` to run without console window.
+   *Or double-click `run_silent.vbs` to run without the console window.*
 
 ## Usage
 
@@ -121,7 +112,6 @@ A Windows desktop application for instant text translation using advanced AI mod
    - Choose any of 100+ languages
    - Add custom prompt for special translation styles
    - Re-translate with different settings
-   - Open in Gemini web for complex queries
 
 5. **Settings**:
    - Right-click tray icon → Settings
@@ -143,7 +133,6 @@ A Windows desktop application for instant text translation using advanced AI mod
 ## Configuration
 
 ### Customizing Hotkeys
-
 1. Open Settings (right-click tray → Settings)
 2. Go to Hotkeys tab
 3. Click "Record" next to any language
@@ -151,25 +140,11 @@ A Windows desktop application for instant text translation using advanced AI mod
 5. Click Save
 
 ### Custom Translation Prompts
-
 In the full translator window, use the "Custom prompt" field to add special instructions:
 - "Make it formal" - For business communication
 - "Use casual tone" - For friendly messages
 - "Technical translation" - For documentation
 - "Keep it brief" - For concise translations
-
-## Requirements
-
-```
-pyperclip==1.8.2
-google-generativeai==0.8.3
-pystray==0.19.5
-Pillow==12.1.0
-ttkbootstrap==1.10.1
-pywin32==306
-keyboard==0.13.5
-packaging==24.0
-```
 
 ## Troubleshooting
 
@@ -188,28 +163,12 @@ packaging==24.0
 - Try running the app as administrator
 - Some apps (like VS Code) may capture certain key combinations
 
-### Hotkeys conflict with other apps
-- Open Settings → Hotkeys
-- Click "Record" and set a different key combination
-- Recommended: Use `Ctrl+Shift+Alt+Letter` for less conflicts
+## What's New in v1.5.0
 
-### Multiple instances running
-The app should prevent this automatically. If it happens, check Task Manager and end extra processes.
-
-## What's New in v1.2.0
-
-- **Modern UI** with ttkbootstrap dark theme
-- **Smart tooltip sizing** that adapts to content
-- **Settings window** with API key, hotkeys, and general settings
-- **Customizable hotkeys** - Record any key combination
-- **Win+Alt+C** for Chinese translation
-- **Custom prompts** for specialized translations
-- **Currency conversion** in translations
-- **Auto-start with Windows** toggle
-- **Auto-update checker**
-- **Better clipboard handling** (preserves files/images)
-- **Improved error messages** with setup instructions
-- **Code architecture refactoring** for better maintainability
+-   🚀 **Modular Architecture**: Complete code refactoring for better stability and performance.
+-   🛠 **Improved Settings**: Easier API key management and hotkey recording.
+-   🐛 **Bug Fixes**: Fixed issues with clipboard handling and hotkey conflicts.
+-   📦 **Lightweight**: Optimized resource usage.
 
 ## Contributing
 
@@ -217,9 +176,9 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License - see the LICENSE file for details.
 
 ## Acknowledgments
 
-- Powered by [Google Gemini AI](https://deepmind.google/technologies/gemini/)
+- Powered by Google Gemini AI
 - Built with Python, Tkinter, and ttkbootstrap
