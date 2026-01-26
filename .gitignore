@@ -55,3 +55,22 @@ backup/
 
 # Claude Code settings
 .claude/
+
+# Local development scripts (not needed for users)
+nul
+restart.bat
+run_silent.vbs
+push_to_github.bat
+install.bat
+memo.txt
+run_with_restart.py
+
+# Test outputs
+tests/__pycache__/
+.pytest_cache/
+htmlcov/
+.coverage
+
+# Config backups (may contain API keys)
+*_backup.json
+config_backup_*.json

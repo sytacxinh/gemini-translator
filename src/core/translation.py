@@ -5,24 +5,28 @@ Handles text translation using AI APIs with clipboard integration.
 import time
 import queue
 import logging
-from typing import Optional
+from typing import Optional, Callable, Tuple, Any
 
 import keyboard
 
 from src.constants import COOLDOWN
 from src.core.clipboard import ClipboardManager
 from src.core.api_manager import AIAPIManager
+from src.core.history import HistoryManager
+from config import Config
 
 
 class TranslationService:
     """Handles all translation-related operations."""
 
-    def __init__(self, config, notification_callback=None):
-        self.config = config
-        self.api_manager = AIAPIManager()
-        self.last_translation_time = 0
-        self.translation_queue = queue.Queue()
-        self.notification_callback = notification_callback
+    def __init__(self, config: Config,
+                 notification_callback: Optional[Callable[[str], None]] = None) -> None:
+        self.config: Config = config
+        self.api_manager: AIAPIManager = AIAPIManager()
+        self.last_translation_time: float = 0
+        self.translation_queue: queue.Queue[Tuple[str, str, str]] = queue.Queue()
+        self.notification_callback: Optional[Callable[[str], None]] = notification_callback
+        self.history_manager: HistoryManager = HistoryManager(config)
         self._configure_api()
 
     def _configure_api(self) -> bool:
@@ -43,6 +47,12 @@ class TranslationService:
         """Reconfigure API (call after API key change)."""
         self._configure_api()
 
+    def _is_dictionary_query(self, text: str) -> bool:
+        """Check if text looks like a dictionary lookup (single word/short phrase)."""
+        words = text.strip().split()
+        # 1-3 words, no sentence punctuation
+        return 1 <= len(words) <= 4 and not any(c in text for c in '.!?;:')
+
     def translate_text(self, text: str, target_language: str,
                        custom_prompt: Optional[str] = None) -> str:
         """Translate text to target language using AI API."""
@@ -55,6 +65,19 @@ Only return the translation, no explanations or additional text.
 If the text is already in {target_language}, still provide a natural rephrasing.
 
 Additional instructions from user: {custom_prompt}"""
+        elif self._is_dictionary_query(text):
+            # Dictionary Mode
+            base_prompt = f"""You are a dictionary. For the input text, provide:
+
+1. **Translation to {target_language}**: [translation]
+2. **Definition**: [meaning in {target_language}]
+3. **Word Type**: [noun/verb/adjective/adverb/etc.]
+4. **Pronunciation**: [IPA if available]
+5. **Example Sentences**:
+   - [Example 1] -> [Translation]
+   - [Example 2] -> [Translation]
+
+Format with markdown. Keep explanations concise."""
         else:
             # No custom prompt (quick hotkey translation) → enforce target language
             base_prompt = f"""Translate the following text to {target_language}.
@@ -68,7 +91,10 @@ IMPORTANT: Your response MUST be in {target_language} only.
         prompt = f"{base_prompt}\n\nText to translate:\n{text}"
 
         try:
-            return self.api_manager.translate(prompt)
+            result = self.api_manager.translate(prompt)
+            # Save to history on success
+            self.history_manager.add_entry(text, result, target_language)
+            return result
         except Exception as e:
             error_msg = str(e)
             if "API_KEY_INVALID" in error_msg or "API key not valid" in error_msg:
@@ -97,7 +123,9 @@ IMPORTANT: Your response MUST be in {target_language} only.
         ClipboardManager.restore_clipboard(original_clipboard)
         return None
 
-    def do_translation(self, target_language: str, callback=None, custom_prompt: str = ""):
+    def do_translation(self, target_language: str,
+                        callback: Optional[Callable[[], None]] = None,
+                        custom_prompt: str = "") -> None:
         """Perform translation and put result in queue."""
         current_time = time.time()
         if current_time - self.last_translation_time < COOLDOWN:

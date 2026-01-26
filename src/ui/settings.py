@@ -4,6 +4,7 @@ Settings Window for AI Translator.
 import os
 import sys
 import gc
+import logging
 import threading
 import webbrowser
 
@@ -23,6 +24,7 @@ except ImportError:
 from src.constants import VERSION, GITHUB_REPO, LANGUAGES, PROVIDERS_LIST
 from src.core.api_manager import AIAPIManager
 from src.utils.updates import check_for_updates, download_and_install_update, execute_update
+from src.core.multimodal import MultimodalProcessor
 
 
 class SettingsWindow:
@@ -106,7 +108,9 @@ class SettingsWindow:
 
         ttk.Label(parent, text="API Configuration", font=('Segoe UI', 12, 'bold')).pack(anchor=W)
         ttk.Label(parent, text="Configure multiple models and keys for failover redundancy.",
-                  font=('Segoe UI', 9)).pack(anchor=W, pady=(5, 10))
+                  font=('Segoe UI', 9)).pack(anchor=W, pady=(5, 5))
+        ttk.Label(parent, text="⚠ Note: Each 'Test' counts as 1 API request toward your quota.",
+                  font=('Segoe UI', 9, 'italic'), foreground='#ff9900').pack(anchor=W, pady=(0, 10))
 
         # Scrollable container for API keys (no visible scrollbar)
         canvas = tk.Canvas(parent, highlightthickness=0, height=380)
@@ -127,8 +131,8 @@ class SettingsWindow:
             if canvas.winfo_exists() and canvas.winfo_ismapped():
                 try:
                     canvas.yview_scroll(int(-1*(event.delta/120)), "units")
-                except:
-                    pass
+                except tk.TclError:
+                    pass  # Canvas may have been destroyed
         canvas.bind("<MouseWheel>", _on_mousewheel)
         api_container.bind("<MouseWheel>", _on_mousewheel)
 
@@ -167,6 +171,54 @@ class SettingsWindow:
         ttk.Label(api_container, text="Delete All: Removes all API keys from storage permanently.",
                   font=('Segoe UI', 8), foreground='#888888').pack(anchor=W, pady=(5, 0))
 
+        # ===== CAPABILITY STATUS (Auto-managed) =====
+        ttk.Separator(api_container).pack(fill=X, pady=15)
+        ttk.Label(api_container, text="API Capabilities (Auto-detected when you Test APIs):",
+                  font=('Segoe UI', 10, 'bold')).pack(anchor=W)
+
+        # Vision/Image capability
+        vision_frame = ttk.Frame(api_container)
+        vision_frame.pack(fill=X, pady=5)
+
+        has_vision = self.config.has_any_vision_capable()
+        self.vision_var = tk.BooleanVar(value=has_vision)
+
+        if HAS_TTKBOOTSTRAP:
+            self.vision_chk = ttk.Checkbutton(vision_frame, text="📷 Image Processing",
+                                  variable=self.vision_var,
+                                  bootstyle="success-round-toggle")
+        else:
+            self.vision_chk = ttk.Checkbutton(vision_frame, text="📷 Image Processing",
+                                  variable=self.vision_var)
+        self.vision_chk.pack(side=LEFT)
+        self.vision_chk.configure(state='disabled')  # Display only
+        status_text = "Available" if has_vision else "No capable API found"
+        status_color = '#28a745' if has_vision else '#888888'
+        ttk.Label(vision_frame, text=f"({status_text})", font=('Segoe UI', 8), foreground=status_color).pack(side=LEFT, padx=(5, 0))
+
+        # File processing capability
+        file_frame = ttk.Frame(api_container)
+        file_frame.pack(fill=X, pady=5)
+
+        has_file = self.config.has_any_file_capable()
+        self.file_var = tk.BooleanVar(value=has_file)
+
+        if HAS_TTKBOOTSTRAP:
+            self.file_chk = ttk.Checkbutton(file_frame, text="📄 File Processing (.txt, .docx, .srt, .pdf)",
+                                  variable=self.file_var,
+                                  bootstyle="success-round-toggle")
+        else:
+            self.file_chk = ttk.Checkbutton(file_frame, text="📄 File Processing (.txt, .docx, .srt, .pdf)",
+                                  variable=self.file_var)
+        self.file_chk.pack(side=LEFT)
+        self.file_chk.configure(state='disabled')  # Display only
+        file_status = "Available" if has_file else "No capable API found"
+        file_color = '#28a745' if has_file else '#888888'
+        ttk.Label(file_frame, text=f"({file_status})", font=('Segoe UI', 8), foreground=file_color).pack(side=LEFT, padx=(5, 0))
+
+        ttk.Label(api_container, text="💡 Tip: Click 'Test' on an API to detect its capabilities.",
+                  font=('Segoe UI', 8), foreground='#888888').pack(anchor=W, pady=(5, 0))
+
         # Supported Providers Table
         ttk.Separator(api_container).pack(fill=X, pady=15)
         ttk.Label(api_container, text="Supported Providers & Models:", font=('Segoe UI', 10, 'bold')).pack(anchor=W)
@@ -196,8 +248,8 @@ class SettingsWindow:
             canvas.config(scrollregion=canvas.bbox("all"))
         self.window.after(100, update_scroll)
 
-        # Auto-test all APIs asynchronously after UI is ready
-        self.window.after(500, self._test_all_apis_async)
+        # Note: Auto-test is now done once at app startup (see app.py _startup_api_check)
+        # to avoid consuming API quota every time Settings is opened.
 
     def _add_api_row(self, parent, model, key, provider="Auto", is_primary=False):
         """Add a single API configuration row.
@@ -276,8 +328,8 @@ class SettingsWindow:
             show_btn = ttk.Button(row, text="Show", command=toggle_show_key, width=5)
         show_btn.pack(side=LEFT, padx=2)
 
-        # Test Button
-        test_label = ttk.Label(row, text="", width=15)
+        # Test Button - width must accommodate "OK! Image OK | Files OK" (~24 chars)
+        test_label = ttk.Label(row, text="", width=25, anchor='w')
 
         if HAS_TTKBOOTSTRAP:
             ttk.Button(row, text="Test",
@@ -301,6 +353,20 @@ class SettingsWindow:
 
         test_label.pack(side=LEFT, padx=3)
 
+        # Display cached status from startup check (if available)
+        if key:
+            cached_status = self.config.api_status_cache.get(key, None)
+            if cached_status is True:
+                if HAS_TTKBOOTSTRAP:
+                    test_label.config(text="OK (cached)", bootstyle="success")
+                else:
+                    test_label.config(text="OK (cached)", foreground="green")
+            elif cached_status is False:
+                if HAS_TTKBOOTSTRAP:
+                    test_label.config(text="Error (cached)", bootstyle="danger")
+                else:
+                    test_label.config(text="Error (cached)", foreground="red")
+
         self.api_rows.append({
             'frame': row,
             'model_var': model_var,
@@ -310,7 +376,7 @@ class SettingsWindow:
             'key_var': key_var,
             'key_entry': key_entry,
             'is_primary': is_primary,
-            'test_label': test_label, # Store reference for auto-testing
+            'test_label': test_label,
             'model_placeholder': model_placeholder
         })
         # Only update button if it exists (button is created after initial rows)
@@ -395,14 +461,15 @@ class SettingsWindow:
                         r['key_var'].get(),
                         r['provider_var'].get(),
                         r['test_label'],
-                        r['model_placeholder']
+                        r['model_placeholder'],
+                        silent=True
                     ))
                 except Exception:
                     pass
         
         threading.Thread(target=run_tests, daemon=True).start()
 
-    def _test_single_api(self, model_name, api_key, provider, result_label, model_placeholder="gemini-2.0-flash"):
+    def _test_single_api(self, model_name, api_key, provider, result_label, model_placeholder="gemini-2.0-flash", silent=False):
         """Test API connection."""
         model_name = model_name.strip()
         # Use placeholder as default if model is empty or is the placeholder text
@@ -430,13 +497,43 @@ class SettingsWindow:
             api_manager.test_connection(model_name, api_key, provider)
             display_name = api_manager.get_display_name(target_provider)
 
+            # Check Vision Capability (image processing)
+            is_vision = MultimodalProcessor.is_vision_capable(model_name, target_provider)
+            # Any working API can handle text files
+            is_file_capable = True
+
+            # Build capability status for label and message
+            capability_parts = []
+            if is_vision:
+                capability_parts.append("Image OK")
+            if is_file_capable:
+                capability_parts.append("Files OK")
+            capability_str = " | ".join(capability_parts) if capability_parts else ""
+            label_text = f"OK! {capability_str}" if capability_str else "OK!"
+
+            # Store capabilities in config
+            self.config.update_api_capabilities(api_key, model_name, is_vision, is_file_capable)
+
+            # Refresh toggle states (now auto-managed)
+            self._refresh_vision_toggle_state()
+            self._refresh_file_toggle_state()
+
+            # Build detailed message
+            capability_msg = ""
+            if is_vision:
+                capability_msg += "\n✓ Image Processing: Supported"
+            if is_file_capable:
+                capability_msg += "\n✓ File Processing: Supported"
+
             if HAS_TTKBOOTSTRAP:
-                result_label.config(text="OK!", bootstyle="success")
-                Messagebox.show_info(f"Connection Verified!\n\nProvider: {display_name}\nModel: {model_name}\nStatus: OK", title="Test Result", parent=self.window)
+                result_label.config(text=label_text, bootstyle="success")
+                if not silent:
+                    Messagebox.show_info(f"Connection Verified!\n\nProvider: {display_name}\nModel: {model_name}\nStatus: OK{capability_msg}", title="Test Result", parent=self.window)
             else:
-                result_label.config(text="OK!", foreground="green")
-                from tkinter import messagebox
-                messagebox.showinfo("Test Result", f"Connection Verified!\n\nProvider: {display_name}\nModel: {model_name}\nStatus: OK", parent=self.window)
+                result_label.config(text=label_text, foreground="green")
+                if not silent:
+                    from tkinter import messagebox
+                    messagebox.showinfo("Test Result", f"Connection Verified!\n\nProvider: {display_name}\nModel: {model_name}\nStatus: OK{capability_msg}", parent=self.window)
         except Exception as e:
             error = str(e)
 
@@ -445,24 +542,53 @@ class SettingsWindow:
             try:
                 code = (AIAPIManager()._identify_provider(model_name, api_key) if provider == 'Auto' else provider)
                 provider_name = AIAPIManager().get_display_name(code)
-            except: pass
+            except Exception:
+                pass  # Keep default UNKNOWN if identification fails
 
             if "API_KEY_INVALID" in error:
                 if HAS_TTKBOOTSTRAP:
                     result_label.config(text="Invalid Key", bootstyle="danger")
-                    Messagebox.show_error(f"Invalid API Key!\n\nProvider: {provider_name}\nModel: {model_name}\nError: {error}", title="Test Failed", parent=self.window)
+                    if not silent:
+                        Messagebox.show_error(f"Invalid API Key!\n\nProvider: {provider_name}\nModel: {model_name}\nError: {error}", title="Test Failed", parent=self.window)
                 else:
                     result_label.config(text="Invalid Key", foreground="red")
-                    from tkinter import messagebox
-                    messagebox.showerror("Test Failed", f"Invalid API Key!\n\nProvider: {provider_name}\nModel: {model_name}\nError: {error}", parent=self.window)
+                    if not silent:
+                        from tkinter import messagebox
+                        messagebox.showerror("Test Failed", f"Invalid API Key!\n\nProvider: {provider_name}\nModel: {model_name}\nError: {error}", parent=self.window)
             else:
                 if HAS_TTKBOOTSTRAP:
                     result_label.config(text="Error", bootstyle="danger")
-                    Messagebox.show_error(f"Connection Failed!\n\nProvider: {provider_name}\nModel: {model_name}\nError: {error}", title="Test Error", parent=self.window)
+                    if not silent:
+                        Messagebox.show_error(f"Connection Failed!\n\nProvider: {provider_name}\nModel: {model_name}\nError: {error}", title="Test Error", parent=self.window)
                 else:
                     result_label.config(text="Error", foreground="red")
-                    from tkinter import messagebox
-                    messagebox.showerror("Test Error", f"Connection Failed!\n\nProvider: {provider_name}\nModel: {model_name}\nError: {error}", parent=self.window)
+                    if not silent:
+                        from tkinter import messagebox
+                        messagebox.showerror("Test Error", f"Connection Failed!\n\nProvider: {provider_name}\nModel: {model_name}\nError: {error}", parent=self.window)
+
+    def _refresh_vision_toggle_state(self):
+        """Refresh vision toggle state based on API capabilities (auto-managed)."""
+        try:
+            has_vision = self.config.has_any_vision_capable()
+            if hasattr(self, 'vision_var'):
+                self.vision_var.set(has_vision)
+            if hasattr(self, 'vision_chk'):
+                # Toggle is display-only, always disabled
+                self.vision_chk.configure(state='disabled')
+        except Exception as e:
+            logging.warning(f"Failed to refresh vision toggle: {e}")
+
+    def _refresh_file_toggle_state(self):
+        """Refresh file toggle state based on API capabilities (auto-managed)."""
+        try:
+            has_file = self.config.has_any_file_capable()
+            if hasattr(self, 'file_var'):
+                self.file_var.set(has_file)
+            if hasattr(self, 'file_chk'):
+                # Toggle is display-only, always disabled
+                self.file_chk.configure(state='disabled')
+        except Exception as e:
+            logging.warning(f"Failed to refresh file toggle: {e}")
 
     def _create_hotkey_tab(self, parent):
         """Create hotkey settings tab."""
@@ -494,8 +620,8 @@ class SettingsWindow:
                     cw, ch = canvas.winfo_width(), canvas.winfo_height()
                     if cx <= x <= cx+cw and cy <= y <= cy+ch:
                         canvas.yview_scroll(int(-1*(event.delta/120)), "units")
-                except:
-                    pass
+                except tk.TclError:
+                    pass  # Canvas may have been destroyed
 
         self.window.bind("<MouseWheel>", _on_mousewheel, add="+")
 
@@ -641,8 +767,8 @@ class SettingsWindow:
         # Unhook any existing
         try:
             keyboard.unhook_all()
-        except:
-            pass
+        except Exception:
+            pass  # Keyboard hooks may not be active
 
         # Hook with specific callback for this entry
         keyboard.hook(lambda e: self._on_key_record(e, entry_var, entry))
@@ -988,5 +1114,5 @@ class SettingsWindow:
                 root.after(500, lambda: os._exit(0))
             else:
                 os._exit(0)
-        except:
-            os._exit(0)
+        except Exception:
+            os._exit(0)  # Force exit even on error

@@ -1,12 +1,16 @@
 """
-Configuration management for AI Translator v1.5.0
+Configuration management for AI Translator v1.6.0
 Handles API key, hotkeys, auto-start settings, and other preferences.
 """
 import os
 import sys
 import json
+import shutil
+import logging
 import winreg
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
+
+from src.core.crypto import SecureStorage
 
 
 class Config:
@@ -23,7 +27,8 @@ class Config:
         "Vietnamese": "win+alt+v",
         "English": "win+alt+e",
         "Japanese": "win+alt+j",
-        "Chinese Simplified": "win+alt+c"
+        "Chinese Simplified": "win+alt+c",
+        "Screenshot": "win+alt+s"
     }
 
     # Languages that can be added as custom hotkeys
@@ -31,16 +36,24 @@ class Config:
     MAX_CUSTOM_HOTKEYS = 4  # Max 4 additional custom hotkeys
 
     DEFAULT_CONFIG = {
-        "api_keys": [],  # List of {model_name, api_key} dicts
+        "api_keys": [],  # List of {model_name, api_key, provider, vision_capable, file_capable} dicts
         "hotkeys": DEFAULT_HOTKEYS.copy(),
         "custom_hotkeys": {},  # Custom language hotkeys (max 4)
         "autostart": False,
         "check_updates": False,  # Default to False
-        "theme": "darkly"
+        "theme": "darkly",
+        "history": [],
+        "history_enabled": True,
+        # Note: vision_enabled and file_processing_enabled are now auto-managed
+        # based on API capabilities detected during testing
+        "vision_enabled": False,
+        "file_processing_enabled": False
     }
 
     def __init__(self):
         self._config: Dict[str, Any] = {}
+        self.api_status_cache: Dict[str, bool] = {}
+        self.runtime_capabilities: Dict[str, bool] = {'vision': False, 'file': False}
         self._ensure_config_dir()
         self.load()
 
@@ -65,7 +78,43 @@ class Config:
             if key not in self._config:
                 self._config[key] = value
 
+        # Migration: Encrypt plaintext API keys if DPAPI is available
+        self._migrate_plaintext_keys()
+
         return self._config
+
+    def _migrate_plaintext_keys(self) -> None:
+        """Migrate plaintext API keys to encrypted format."""
+        if not SecureStorage.is_available():
+            return
+
+        # Check if already migrated
+        if self._config.get('encryption_version', 0) >= 1:
+            return
+
+        api_keys = self._config.get('api_keys', [])
+        needs_migration = False
+
+        for key_config in api_keys:
+            # Check for plaintext api_key that needs encryption
+            if 'api_key' in key_config and 'api_key_encrypted' not in key_config:
+                needs_migration = True
+                break
+
+        if needs_migration:
+            logging.info("Migrating plaintext API keys to encrypted storage...")
+
+            # Backup config before migration
+            backup_file = self.CONFIG_FILE + '.backup'
+            try:
+                shutil.copy2(self.CONFIG_FILE, backup_file)
+                logging.info(f"Config backup saved to: {backup_file}")
+            except Exception as e:
+                logging.warning(f"Failed to create backup: {e}")
+
+            # Re-save with encryption (get_api_keys decrypts, set_api_keys encrypts)
+            current_keys = self.get_api_keys()
+            self.set_api_keys(current_keys)
 
     def save(self, secure: bool = False):
         """Save configuration to file."""
@@ -88,13 +137,30 @@ class Config:
             os.fsync(f.fileno()) # Force write to disk immediately
 
     # API Key management
-    def get_api_keys(self) -> list:
-        """Get all API keys with their models.
-        Returns list of dicts: [{model_name, api_key}, ...]
+    def get_api_keys(self) -> List[Dict[str, Any]]:
+        """Get all API keys with their models (decrypted).
+        Returns list of dicts: [{model_name, api_key, provider, vision_capable, file_capable}, ...]
         """
-        # If 'api_keys' is explicitly set (even empty), return it
+        # If 'api_keys' is explicitly set (even empty), process it
         if 'api_keys' in self._config:
-            return self._config['api_keys']
+            api_keys = []
+            for key_config in self._config['api_keys']:
+                decrypted_config = key_config.copy()
+
+                # Check for encrypted key
+                if 'api_key_encrypted' in key_config:
+                    decrypted = SecureStorage.decrypt(key_config['api_key_encrypted'])
+                    if decrypted:
+                        decrypted_config['api_key'] = decrypted
+                    else:
+                        # Decryption failed - maybe different user/machine
+                        decrypted_config['api_key'] = ''
+                        logging.warning("Failed to decrypt API key - may need to re-enter")
+                    # Remove encrypted key from returned dict
+                    decrypted_config.pop('api_key_encrypted', None)
+
+                api_keys.append(decrypted_config)
+            return api_keys
 
         # Migration: Check for old singular keys if list is missing
         api_keys = []
@@ -104,14 +170,29 @@ class Config:
         backup = self._config.get('backup_api_key')
         if backup:
             api_keys.append({'model_name': '', 'api_key': backup})
-                
+
         return api_keys
 
-    def set_api_keys(self, api_keys: list, secure: bool = False):
-        """Set all API keys with their models.
-        api_keys: list of dicts [{model_name, api_key}, ...]
+    def set_api_keys(self, api_keys: List[Dict[str, Any]], secure: bool = False) -> None:
+        """Set all API keys with their models (encrypted with DPAPI).
+        api_keys: list of dicts [{model_name, api_key, provider}, ...]
         """
-        self._config['api_keys'] = api_keys
+        encrypted_keys = []
+        for key_config in api_keys:
+            encrypted_config = key_config.copy()
+
+            # Encrypt the API key if DPAPI is available
+            if 'api_key' in key_config and key_config['api_key']:
+                encrypted = SecureStorage.encrypt(key_config['api_key'])
+                if encrypted:
+                    encrypted_config['api_key_encrypted'] = encrypted
+                    encrypted_config.pop('api_key', None)  # Remove plaintext
+                # If encryption fails, keep plaintext as fallback
+
+            encrypted_keys.append(encrypted_config)
+
+        self._config['api_keys'] = encrypted_keys
+        self._config['encryption_version'] = 1  # Track encryption format
         self.save(secure=secure)
 
     def get_api_key(self) -> str:
@@ -196,6 +277,10 @@ class Config:
         self._config['hotkeys'] = self.DEFAULT_HOTKEYS.copy()
         self._config['custom_hotkeys'] = {}
         self._config['api_keys'] = api_keys  # Preserve API keys with models
+        
+        # Preserve history
+        history = self._config.get('history', [])
+        self._config['history'] = history
         self.save()
 
     # Auto-start management
@@ -270,6 +355,44 @@ class Config:
         """Set UI theme."""
         self._config['theme'] = theme
         self.save()
+
+    # API Capability Management
+    def update_api_capabilities(self, api_key: str, model_name: str, vision_capable: bool, file_capable: bool):
+        """Update capability flags for a specific API configuration."""
+        api_keys = self.get_api_keys()
+        for api_config in api_keys:
+            if api_config.get('api_key') == api_key and api_config.get('model_name') == model_name:
+                api_config['vision_capable'] = vision_capable
+                api_config['file_capable'] = file_capable
+                break
+        self._config['api_keys'] = api_keys
+        self._auto_update_toggles()
+        self.save()
+
+    def _auto_update_toggles(self):
+        """Auto-enable toggles based on API capabilities."""
+        api_keys = self.get_api_keys()
+        has_vision = any(api.get('vision_capable', False) for api in api_keys)
+        has_file = any(api.get('file_capable', False) for api in api_keys)
+
+        self._config['vision_enabled'] = has_vision
+        self._config['file_processing_enabled'] = has_file
+
+    def get_vision_capable_apis(self) -> list:
+        """Get list of API configs that support vision/image processing."""
+        return [api for api in self.get_api_keys() if api.get('vision_capable', False)]
+
+    def get_file_capable_apis(self) -> list:
+        """Get list of API configs that support file processing."""
+        return [api for api in self.get_api_keys() if api.get('file_capable', False)]
+
+    def has_any_vision_capable(self) -> bool:
+        """Check if any API supports vision."""
+        return len(self.get_vision_capable_apis()) > 0
+
+    def has_any_file_capable(self) -> bool:
+        """Check if any API supports file processing."""
+        return len(self.get_file_capable_apis()) > 0
 
     # Generic getter/setter
     def get(self, key: str, default: Any = None) -> Any:

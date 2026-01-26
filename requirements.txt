@@ -7,3 +7,14 @@ pywin32==311
 keyboard==0.13.5
 packaging==24.0
 pyinstaller
+python-docx>=0.8.11
+pysrt>=1.1.2
+chardet>=5.0.0
+tkinterdnd2>=0.3.0
+windnd>=1.0.7
+PyPDF2>=3.0.0
+
+# Testing dependencies
+pytest>=7.0.0
+pytest-cov>=4.0.0
+pytest-mock>=3.0.0

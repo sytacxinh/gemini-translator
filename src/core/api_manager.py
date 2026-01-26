@@ -3,14 +3,17 @@ AI API Manager for AI Translator.
 Handles communication with various AI providers (Google, OpenAI, Anthropic, Groq, etc.)
 """
 import json
+import time
 import urllib.request
 import urllib.error
 import logging
-from typing import Optional
+from typing import Optional, List, Dict, Any, Callable
 
 import google.generativeai as genai
 
 from src.constants import MODEL_PROVIDER_MAP, API_KEY_PATTERNS
+from src.core.multimodal import MultimodalProcessor
+from src.core.ssl_pinning import get_ssl_context_for_url
 
 
 class AIAPIManager:
@@ -21,18 +24,19 @@ class AIAPIManager:
               Cerebras, SambaNova, Together, SiliconFlow, OpenRouter.
     """
 
-    MODEL_NAME = ''
+    MODEL_NAME: str = ''
 
-    def __init__(self):
-        self.api_configs = []
-        self.notification_callback = None
+    def __init__(self) -> None:
+        self.api_configs: List[Dict[str, Any]] = []
+        self.notification_callback: Optional[Callable[[str], None]] = None
 
-    def configure(self, api_configs: list, notification_callback=None):
-        """Configure the API with list of {model_name, api_key}."""
+    def configure(self, api_configs: List[Dict[str, Any]],
+                  notification_callback: Optional[Callable[[str], None]] = None) -> None:
+        """Configure the API with list of {model_name, api_key, provider}."""
         self.api_configs = api_configs
         self.notification_callback = notification_callback
 
-    def _identify_provider(self, model_name: str, api_key: str = "") -> str:
+    def _identify_provider(self, model_name: str, api_key: str = "") -> str:  # noqa: C901
         """
         Identify API provider based on model name and API key format.
 
@@ -117,33 +121,86 @@ class AIAPIManager:
 
         return 'google'  # Ultimate fallback
 
-    def _call_generic_openai_style(self, api_key: str, model_name: str, prompt: str, base_url: str) -> str:
-        """Helper for OpenAI-compatible APIs."""
+    def _call_generic_openai_style(self, api_key: str, model_name: str, prompt: str,
+                                     base_url: str, image_path: Optional[str] = None) -> str:
+        """Helper for OpenAI-compatible APIs with rate limit handling."""
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {api_key}",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Accept": "application/json",
         }
+
+        messages = []
+        if image_path:
+            # Vision request
+            b64_data, mime_type = MultimodalProcessor.encode_image_base64(image_path)
+            if b64_data:
+                content = [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{b64_data}"}}
+                ]
+                messages.append({"role": "user", "content": content})
+            else:
+                messages.append({"role": "user", "content": prompt})
+        else:
+            messages.append({"role": "user", "content": prompt})
+
         data = {
             "model": model_name,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": messages,
             "temperature": 0.3
         }
 
-        req = urllib.request.Request(
-            base_url,
-            data=json.dumps(data).encode('utf-8'),
-            headers=headers,
-            method="POST"
-        )
+        # Retry logic with exponential backoff for rate limits
+        max_retries = 3
+        ssl_context = get_ssl_context_for_url(base_url)
 
-        with urllib.request.urlopen(req, timeout=10) as response:
-            result = json.loads(response.read().decode('utf-8'))
-            return result['choices'][0]['message']['content'].strip()
+        for attempt in range(max_retries):
+            req = urllib.request.Request(
+                base_url,
+                data=json.dumps(data).encode('utf-8'),
+                headers=headers,
+                method="POST"
+            )
 
-    def _call_anthropic(self, api_key: str, model_name: str, prompt: str) -> str:
-        """Helper for Anthropic Claude API."""
+            try:
+                with urllib.request.urlopen(req, timeout=10, context=ssl_context) as response:
+                    result = json.loads(response.read().decode('utf-8'))
+                    return result['choices'][0]['message']['content'].strip()
+            except urllib.error.HTTPError as e:
+                if e.code == 429:  # Rate limit
+                    if attempt < max_retries - 1:
+                        wait_time = 2 ** attempt  # 1s, 2s, 4s
+                        logging.warning(f"Rate limit hit, waiting {wait_time}s before retry...")
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        raise Exception(f"Rate limit exceeded after {max_retries} retries")
+                elif e.code == 401 or e.code == 403:
+                    raise Exception("API_KEY_INVALID: Authentication failed")
+                elif e.code >= 500:
+                    if attempt < max_retries - 1:
+                        wait_time = 2 ** attempt
+                        logging.warning(f"Server error {e.code}, waiting {wait_time}s before retry...")
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        raise Exception(f"Server error {e.code} after {max_retries} retries")
+                else:
+                    raise  # Re-raise other HTTP errors
+            except urllib.error.URLError as e:
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt
+                    logging.warning(f"Network error, waiting {wait_time}s before retry: {e}")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    raise Exception(f"Network error after {max_retries} retries: {e}")
+
+    def _call_anthropic(self, api_key: str, model_name: str, prompt: str,
+                         image_path: Optional[str] = None) -> str:
+        """Helper for Anthropic Claude API with rate limit handling."""
         url = "https://api.anthropic.com/v1/messages"
         headers = {
             "x-api-key": api_key,
@@ -152,36 +209,93 @@ class AIAPIManager:
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Accept": "application/json",
         }
+
+        content = []
+        if image_path:
+            b64_data, mime_type = MultimodalProcessor.encode_image_base64(image_path)
+            if b64_data:
+                content.append({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": mime_type,
+                        "data": b64_data
+                    }
+                })
+
+        content.append({"type": "text", "text": prompt})
+
         data = {
             "model": model_name,
             "max_tokens": 1024,
-            "messages": [{"role": "user", "content": prompt}]
+            "messages": [{"role": "user", "content": content}]
         }
 
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(data).encode('utf-8'),
-            headers=headers,
-            method="POST"
-        )
+        # Retry logic with exponential backoff for rate limits
+        max_retries = 3
+        ssl_context = get_ssl_context_for_url(url)
 
-        with urllib.request.urlopen(req, timeout=10) as response:
-            result = json.loads(response.read().decode('utf-8'))
-            return result['content'][0]['text'].strip()
+        for attempt in range(max_retries):
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(data).encode('utf-8'),
+                headers=headers,
+                method="POST"
+            )
 
-    def _generate_content(self, provider: str, api_key: str, model_name: str, prompt: str) -> str:
+            try:
+                with urllib.request.urlopen(req, timeout=10, context=ssl_context) as response:
+                    result = json.loads(response.read().decode('utf-8'))
+                    return result['content'][0]['text'].strip()
+            except urllib.error.HTTPError as e:
+                if e.code == 429:  # Rate limit
+                    if attempt < max_retries - 1:
+                        wait_time = 2 ** attempt
+                        logging.warning(f"Rate limit hit, waiting {wait_time}s before retry...")
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        raise Exception(f"Rate limit exceeded after {max_retries} retries")
+                elif e.code == 401 or e.code == 403:
+                    raise Exception("API_KEY_INVALID: Authentication failed")
+                elif e.code >= 500:
+                    if attempt < max_retries - 1:
+                        wait_time = 2 ** attempt
+                        logging.warning(f"Server error {e.code}, waiting {wait_time}s before retry...")
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        raise Exception(f"Server error {e.code} after {max_retries} retries")
+                else:
+                    raise  # Re-raise other HTTP errors
+            except urllib.error.URLError as e:
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt
+                    logging.warning(f"Network error, waiting {wait_time}s before retry: {e}")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    raise Exception(f"Network error after {max_retries} retries: {e}")
+
+    def _generate_content(self, provider: str, api_key: str, model_name: str,
+                           prompt: str, image_path: Optional[str] = None) -> str:
         """Route the request to the correct provider."""
 
         # --- Google (SDK) ---
         if provider == 'google':
             genai.configure(api_key=api_key)
             model = genai.GenerativeModel(model_name)
-            response = model.generate_content(prompt)
+            if image_path:
+                import PIL.Image
+                img = PIL.Image.open(image_path)
+                response = model.generate_content([prompt, img])
+            else:
+                response = model.generate_content(prompt)
             return response.text.strip()
 
         # --- Anthropic ---
         elif provider == 'anthropic':
-            return self._call_anthropic(api_key, model_name, prompt)
+            return self._call_anthropic(api_key, model_name, prompt, image_path)
 
         # --- OpenAI Compatible APIs ---
         base_urls = {
@@ -199,7 +313,7 @@ class AIAPIManager:
         }
 
         if provider in base_urls:
-            return self._call_generic_openai_style(api_key, model_name, prompt, base_urls[provider])
+            return self._call_generic_openai_style(api_key, model_name, prompt, base_urls[provider], image_path)
 
         raise Exception(f"Unknown provider: {provider}")
 
@@ -267,3 +381,304 @@ class AIAPIManager:
             raise Exception("No valid API key configured. Please add an API key in Settings.")
 
         raise Exception("All API keys failed.\n" + "\n".join(errors))
+
+    def translate_image(self, prompt: str, image_path: str) -> str:
+        """Translate/Analyze image using configured keys."""
+        if not self.api_configs:
+            raise Exception("API not configured. Please set your API key in Settings.")
+
+        errors = []
+        has_valid_key = False
+
+        for i, config in enumerate(self.api_configs):
+            api_key = config.get('api_key', '').strip()
+            model_name = config.get('model_name', '').strip()
+            provider = config.get('provider', 'Auto')
+
+            if not api_key or not model_name:
+                continue
+
+            target_provider = self._identify_provider(model_name, api_key) if provider == 'Auto' else provider.lower()
+
+            # Check vision capability
+            if not MultimodalProcessor.is_vision_capable(model_name, target_provider):
+                continue
+
+            has_valid_key = True
+
+            try:
+                return self._generate_content(target_provider, api_key, model_name, prompt, image_path)
+            except Exception as e:
+                errors.append(f"{model_name}: {str(e)}")
+                continue
+
+        if not has_valid_key:
+            raise Exception("No configured API supports vision. Please use a vision-capable model (e.g., Gemini 2.0 Flash, GPT-4o).")
+
+        raise Exception("All vision APIs failed.\n" + "\n".join(errors))
+
+    def translate_multimodal(self, prompt: str,
+                              image_paths: Optional[List[str]] = None,
+                              file_contents: Optional[Dict[str, str]] = None) -> str:
+        """Translate with multiple images and file contents in ONE request.
+
+        Args:
+            prompt: Translation instructions
+            image_paths: List of image file paths
+            file_contents: Dict of {filename: content} for text files
+
+        Returns:
+            Combined translation result
+        """
+        if not self.api_configs:
+            raise Exception("API not configured. Please set your API key in Settings.")
+
+        image_paths = image_paths or []
+        file_contents = file_contents or {}
+
+        errors = []
+        has_valid_key = False
+        needs_vision = len(image_paths) > 0
+
+        for i, config in enumerate(self.api_configs):
+            api_key = config.get('api_key', '').strip()
+            model_name = config.get('model_name', '').strip()
+            provider = config.get('provider', 'Auto')
+
+            if not api_key or not model_name:
+                continue
+
+            target_provider = self._identify_provider(model_name, api_key) if provider == 'Auto' else provider.lower()
+
+            # If we have images, check vision capability
+            if needs_vision and not MultimodalProcessor.is_vision_capable(model_name, target_provider):
+                continue
+
+            has_valid_key = True
+
+            try:
+                return self._generate_content_multimodal(
+                    target_provider, api_key, model_name, prompt, image_paths, file_contents
+                )
+            except Exception as e:
+                errors.append(f"{model_name}: {str(e)}")
+                continue
+
+        if not has_valid_key:
+            if needs_vision:
+                raise Exception("No configured API supports vision. Please use a vision-capable model (e.g., Gemini 2.0 Flash, GPT-4o).")
+            else:
+                raise Exception("No valid API key configured. Please add an API key in Settings.")
+
+        raise Exception("All API calls failed.\n" + "\n".join(errors))
+
+    def _generate_content_multimodal(self, provider: str, api_key: str, model_name: str,
+                                      prompt: str, image_paths: List[str],
+                                      file_contents: Dict[str, str]) -> str:
+        """Generate content with multiple images and file contents."""
+        import PIL.Image
+        import os
+
+        # Build the full prompt with file contents embedded
+        full_prompt = prompt
+        if file_contents:
+            file_section = "\n\n--- Attached File Contents ---\n"
+            for filename, content in file_contents.items():
+                file_section += f"\n**{filename}:**\n{content}\n"
+            full_prompt = prompt + file_section
+
+        # --- Google (SDK) - supports multiple images natively ---
+        if provider == 'google':
+            genai.configure(api_key=api_key)
+            model = genai.GenerativeModel(model_name)
+
+            content_parts = [full_prompt]
+            for img_path in image_paths:
+                if os.path.exists(img_path):
+                    img = PIL.Image.open(img_path)
+                    content_parts.append(img)
+
+            response = model.generate_content(content_parts)
+            return response.text.strip()
+
+        # --- Anthropic - supports multiple images ---
+        elif provider == 'anthropic':
+            return self._call_anthropic_multimodal(api_key, model_name, full_prompt, image_paths)
+
+        # --- OpenAI Compatible APIs ---
+        base_urls = {
+            'openai': "https://api.openai.com/v1/chat/completions",
+            'groq': "https://api.groq.com/openai/v1/chat/completions",
+            'deepseek': "https://api.deepseek.com/chat/completions",
+            'mistral': "https://api.mistral.ai/v1/chat/completions",
+            'xai': "https://api.x.ai/v1/chat/completions",
+            'perplexity': "https://api.perplexity.ai/chat/completions",
+            'cerebras': "https://api.cerebras.ai/v1/chat/completions",
+            'sambanova': "https://api.sambanova.ai/v1/chat/completions",
+            'together': "https://api.together.xyz/v1/chat/completions",
+            'siliconflow': "https://api.siliconflow.cn/v1/chat/completions",
+            'openrouter': "https://openrouter.ai/api/v1/chat/completions",
+        }
+
+        if provider in base_urls:
+            return self._call_openai_style_multimodal(api_key, model_name, full_prompt, base_urls[provider], image_paths)
+
+        raise Exception(f"Unknown provider: {provider}")
+
+    def _call_openai_style_multimodal(self, api_key: str, model_name: str, prompt: str,
+                                        base_url: str, image_paths: List[str]) -> str:
+        """Helper for OpenAI-compatible APIs with multiple images."""
+        import os
+
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "application/json",
+        }
+
+        # Build content array with text + all images
+        content = [{"type": "text", "text": prompt}]
+
+        for img_path in image_paths:
+            if os.path.exists(img_path):
+                b64_data, mime_type = MultimodalProcessor.encode_image_base64(img_path)
+                if b64_data:
+                    content.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{mime_type};base64,{b64_data}"}
+                    })
+
+        messages = [{"role": "user", "content": content}]
+
+        data = {
+            "model": model_name,
+            "messages": messages,
+            "temperature": 0.3
+        }
+
+        # Retry logic
+        max_retries = 3
+        ssl_context = get_ssl_context_for_url(base_url)
+
+        for attempt in range(max_retries):
+            req = urllib.request.Request(
+                base_url,
+                data=json.dumps(data).encode('utf-8'),
+                headers=headers,
+                method="POST"
+            )
+
+            try:
+                with urllib.request.urlopen(req, timeout=60, context=ssl_context) as response:
+                    result = json.loads(response.read().decode('utf-8'))
+                    return result['choices'][0]['message']['content'].strip()
+            except urllib.error.HTTPError as e:
+                if e.code == 429:
+                    if attempt < max_retries - 1:
+                        wait_time = 2 ** attempt
+                        logging.warning(f"Rate limit hit, waiting {wait_time}s before retry...")
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        raise Exception(f"Rate limit exceeded after {max_retries} retries")
+                elif e.code == 401 or e.code == 403:
+                    raise Exception("API_KEY_INVALID: Authentication failed")
+                elif e.code >= 500:
+                    if attempt < max_retries - 1:
+                        wait_time = 2 ** attempt
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        raise Exception(f"Server error {e.code} after {max_retries} retries")
+                else:
+                    raise
+            except urllib.error.URLError as e:
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    raise Exception(f"Network error after {max_retries} retries: {e}")
+
+    def _call_anthropic_multimodal(self, api_key: str, model_name: str, prompt: str,
+                                     image_paths: List[str]) -> str:
+        """Helper for Anthropic Claude API with multiple images."""
+        import os
+
+        url = "https://api.anthropic.com/v1/messages"
+        headers = {
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "application/json",
+        }
+
+        content = []
+
+        # Add all images first
+        for img_path in image_paths:
+            if os.path.exists(img_path):
+                b64_data, mime_type = MultimodalProcessor.encode_image_base64(img_path)
+                if b64_data:
+                    content.append({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": mime_type,
+                            "data": b64_data
+                        }
+                    })
+
+        # Add text prompt
+        content.append({"type": "text", "text": prompt})
+
+        data = {
+            "model": model_name,
+            "max_tokens": 4096,  # Larger for multi-image responses
+            "messages": [{"role": "user", "content": content}]
+        }
+
+        # Retry logic
+        max_retries = 3
+        ssl_context = get_ssl_context_for_url(url)
+
+        for attempt in range(max_retries):
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(data).encode('utf-8'),
+                headers=headers,
+                method="POST"
+            )
+
+            try:
+                with urllib.request.urlopen(req, timeout=60, context=ssl_context) as response:
+                    result = json.loads(response.read().decode('utf-8'))
+                    return result['content'][0]['text'].strip()
+            except urllib.error.HTTPError as e:
+                if e.code == 429:
+                    if attempt < max_retries - 1:
+                        wait_time = 2 ** attempt
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        raise Exception(f"Rate limit exceeded after {max_retries} retries")
+                elif e.code == 401 or e.code == 403:
+                    raise Exception("API_KEY_INVALID: Authentication failed")
+                elif e.code >= 500:
+                    if attempt < max_retries - 1:
+                        wait_time = 2 ** attempt
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        raise Exception(f"Server error {e.code} after {max_retries} retries")
+                else:
+                    raise
+            except urllib.error.URLError as e:
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    raise Exception(f"Network error after {max_retries} retries: {e}")

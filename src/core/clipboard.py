@@ -26,7 +26,7 @@ class ClipboardManager:
         if not HAS_WIN32:
             try:
                 return {'text': pyperclip.paste()}
-            except:
+            except Exception:
                 return None
 
         try:
@@ -51,8 +51,8 @@ class ClipboardManager:
             for fmt in formats:
                 try:
                     saved[fmt] = win32clipboard.GetClipboardData(fmt)
-                except:
-                    pass
+                except Exception:
+                    pass  # Skip unsupported formats
             return saved
         except Exception as e:
             logging.warning(f"Failed to save clipboard: {e}")
@@ -60,8 +60,8 @@ class ClipboardManager:
         finally:
             try:
                 win32clipboard.CloseClipboard()
-            except:
-                pass
+            except Exception:
+                pass  # Clipboard may not be open
 
     @staticmethod
     def restore_clipboard(saved: Optional[Dict[int, Any]]):
@@ -73,8 +73,8 @@ class ClipboardManager:
             if 'text' in saved:
                 try:
                     pyperclip.copy(saved['text'])
-                except:
-                    pass
+                except Exception:
+                    pass  # Clipboard unavailable
             return
 
         try:
@@ -91,15 +91,15 @@ class ClipboardManager:
             for fmt, data in saved.items():
                 try:
                     win32clipboard.SetClipboardData(fmt, data)
-                except:
-                    pass
+                except Exception:
+                    pass  # Skip unsupported formats
         except Exception as e:
             logging.warning(f"Failed to restore clipboard: {e}")
         finally:
             try:
                 win32clipboard.CloseClipboard()
-            except:
-                pass
+            except Exception:
+                pass  # Clipboard may not be open
 
     @staticmethod
     def set_text(text: str):
@@ -119,13 +119,13 @@ class ClipboardManager:
 
                 win32clipboard.EmptyClipboard()
                 win32clipboard.SetClipboardText(text, win32con.CF_UNICODETEXT)
-            except:
-                pyperclip.copy(text)
+            except Exception:
+                pyperclip.copy(text)  # Fallback to pyperclip
             finally:
                 try:
                     win32clipboard.CloseClipboard()
-                except:
-                    pass
+                except Exception:
+                    pass  # Clipboard may not be open
         else:
             pyperclip.copy(text)
 
@@ -134,5 +134,5 @@ class ClipboardManager:
         """Get text from clipboard."""
         try:
             return pyperclip.paste()
-        except:
-            return ""
+        except Exception:
+            return ""  # Return empty on clipboard error

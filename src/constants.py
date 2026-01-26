@@ -3,7 +3,7 @@ Constants and configuration values for AI Translator.
 """
 
 # ============== VERSION ==============
-VERSION = "1.5.0"
+VERSION = "1.6.0"
 APP_NAME = "AI Translator"
 GITHUB_REPO = "sytacxinh/ai-translator"
 
@@ -203,4 +203,19 @@ API_KEY_PATTERNS = {
     'sk-or-v1-': 'openrouter', # OpenRouter keys
     'pplx-': 'perplexity',    # Perplexity keys
     # Note: sk- is used by OpenAI, DeepSeek, Together, SiliconFlow - need model name
+}
+
+# ============== VISION MODELS ==============
+# Models that support vision/image input. Supports wildcards (*).
+# Note: Naming patterns like 'vision', 'VL', 'pixtral' are also detected in multimodal.py
+VISION_MODELS = {
+    'google': ['gemini-*'],  # All Gemini models support vision
+    'openai': ['gpt-4-vision-*', 'gpt-4o', 'gpt-4o-*'],  # Note: o1 models do NOT support vision
+    'anthropic': ['claude-3-*', 'claude-3.5-*', 'claude-3-5-*'],  # Wildcard support
+    'groq': ['llama-3.2-*-vision-*', 'llava-*'],
+    'xai': ['grok-*-vision*', 'grok-vision-*'],
+    'mistral': ['pixtral-*'],
+    'together': ['meta-llama/Llama-3.2-*-Vision-*', 'Qwen/Qwen2-VL-*', '*-vision-*'],
+    'siliconflow': ['Qwen/Qwen2-VL-*', '*-VL-*'],
+    'openrouter': ['*'],  # OpenRouter aggregates models - rely on naming heuristics
 }

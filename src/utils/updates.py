@@ -8,11 +8,12 @@ import logging
 import tempfile
 import subprocess
 import urllib.request
-from typing import Dict, Any
+from typing import Dict, Any, Optional, Callable
 
 from packaging import version
 
 from src.constants import VERSION, GITHUB_REPO
+from src.core.ssl_pinning import get_ssl_context_for_url
 
 
 def check_for_updates() -> Dict[str, Any]:
@@ -23,7 +24,8 @@ def check_for_updates() -> Dict[str, Any]:
             'Accept': 'application/vnd.github.v3+json',
             'User-Agent': 'AITranslator'
         })
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        ssl_context = get_ssl_context_for_url(url)
+        with urllib.request.urlopen(req, timeout=10, context=ssl_context) as resp:
             data = json.loads(resp.read().decode())
 
         latest_version = data['tag_name'].lstrip('v')
@@ -47,7 +49,8 @@ def check_for_updates() -> Dict[str, Any]:
     return {'available': False}
 
 
-def download_and_install_update(exe_url: str, new_version: str, progress_callback=None) -> Dict[str, Any]:
+def download_and_install_update(exe_url: str, new_version: str,
+                                progress_callback: Optional[Callable[[int, int, int], None]] = None) -> Dict[str, Any]:
     """
     Download new exe and prepare update script.
     Returns dict with 'success', 'error', or 'script_path'.
@@ -62,8 +65,9 @@ def download_and_install_update(exe_url: str, new_version: str, progress_callbac
         new_exe_path = os.path.join(temp_dir, f'AITranslator_v{new_version}.exe')
 
         req = urllib.request.Request(exe_url, headers={'User-Agent': 'AITranslator'})
+        ssl_context = get_ssl_context_for_url(exe_url)
 
-        with urllib.request.urlopen(req, timeout=60) as response:
+        with urllib.request.urlopen(req, timeout=60, context=ssl_context) as response:
             total_size = int(response.headers.get('Content-Length', 0))
             downloaded = 0
             chunk_size = 8192
