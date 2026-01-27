@@ -21,7 +21,7 @@ except ImportError:
     from tkinter import ttk
     HAS_TTKBOOTSTRAP = False
 
-from src.constants import VERSION, GITHUB_REPO, LANGUAGES, PROVIDERS_LIST, FEEDBACK_URL, MODEL_PROVIDER_MAP
+from src.constants import VERSION, GITHUB_REPO, LANGUAGES, PROVIDERS_LIST, FEEDBACK_URL, MODEL_PROVIDER_MAP, API_KEY_PATTERNS
 from src.core.api_manager import AIAPIManager
 from src.utils.updates import check_for_updates, download_and_install_update, execute_update
 from src.core.multimodal import MultimodalProcessor
@@ -222,7 +222,7 @@ class SettingsWindow:
                   font=('Segoe UI', 9)).pack(anchor=W, pady=(5, 5))
         ttk.Label(parent, text="⚠ Note: Each 'Test' counts as 1 API request toward your quota.",
                   font=('Segoe UI', 9, 'italic'), foreground='#ff9900').pack(anchor=W, pady=(0, 3))
-        ttk.Label(parent, text="💡 Model = Auto: System will try models until one works (may not be optimal for your task).",
+        ttk.Label(parent, text="💡 Auto mode: System will scan providers/models to find a working pair (saved for future use).",
                   font=('Segoe UI', 9, 'italic'), foreground='#888888').pack(anchor=W, pady=(0, 10))
 
         # Scrollable container for API keys (no visible scrollbar)
@@ -469,13 +469,31 @@ class SettingsWindow:
         # Test Button - width must accommodate "OK! Image OK | Files OK" (~24 chars)
         test_label = ttk.Label(row, text="", width=25, anchor='w')
 
+        # Create row_data dict early so Test button can reference it
+        row_data = {
+            'frame': row,
+            'model_var': model_var,
+            'provider_var': provider_var,
+            'model_cb': model_cb,
+            'key_var': key_var,
+            'key_entry': key_entry,
+            'is_primary': is_primary,
+            'test_label': test_label,
+            'show_btn': show_btn,
+            'show_state': show_state
+        }
+
         if HAS_TTKBOOTSTRAP:
             ttk.Button(row, text="Test",
-                       command=lambda: self._test_single_api(model_var.get(), key_var.get(), provider_var.get(), test_label),
+                       command=lambda rd=row_data: self._test_single_api(
+                           rd['model_var'].get(), rd['key_var'].get(), rd['provider_var'].get(),
+                           rd['test_label'], silent=False, row_data=rd),
                        bootstyle="info-outline", width=5).pack(side=LEFT, padx=2)
         else:
             ttk.Button(row, text="Test",
-                       command=lambda: self._test_single_api(model_var.get(), key_var.get(), provider_var.get(), test_label),
+                       command=lambda rd=row_data: self._test_single_api(
+                           rd['model_var'].get(), rd['key_var'].get(), rd['provider_var'].get(),
+                           rd['test_label'], silent=False, row_data=rd),
                        width=5).pack(side=LEFT, padx=2)
 
         # Delete Button (only for backups)
@@ -505,18 +523,7 @@ class SettingsWindow:
                 else:
                     test_label.config(text="Error (cached)", foreground="red")
 
-        self.api_rows.append({
-            'frame': row,
-            'model_var': model_var,
-            'provider_var': provider_var,
-            'model_cb': model_cb,
-            'key_var': key_var,
-            'key_entry': key_entry,
-            'is_primary': is_primary,
-            'test_label': test_label,
-            'show_btn': show_btn,
-            'show_state': show_state
-        })
+        self.api_rows.append(row_data)
         # Only update button if it exists (button is created after initial rows)
         if hasattr(self, 'add_api_btn'):
             self._update_api_add_button()
@@ -688,19 +695,37 @@ class SettingsWindow:
                         r['key_var'].get(),
                         r['provider_var'].get(),
                         r['test_label'],
-                        silent=True
+                        silent=True,
+                        row_data=r
                     ))
                 except Exception:
                     pass
 
         threading.Thread(target=run_tests, daemon=True).start()
 
-    def _test_single_api(self, model_name, api_key, provider, result_label, silent=False):
-        """Test API connection."""
+    def _detect_provider_from_key(self, api_key: str) -> str:
+        """Detect provider from API key pattern.
+
+        Args:
+            api_key: The API key to analyze
+
+        Returns:
+            Provider name (lowercase) or empty string if not detected
+        """
+        key = api_key.strip()
+        for pattern, provider in API_KEY_PATTERNS.items():
+            if key.startswith(pattern):
+                return provider
+        return ""
+
+    def _test_single_api(self, model_name, api_key, provider, result_label, silent=False, row_data=None):
+        """Test API connection with smart iteration for Auto modes.
+
+        When Provider=Auto + Model=Auto: Iterates through detected provider's models
+        When Provider=specific + Model=Auto: Iterates through that provider's models
+        Only shows error if ALL combinations fail.
+        """
         model_name = model_name.strip()
-        # Use default model if "Auto" is selected
-        if not model_name or model_name == "Auto":
-            model_name = "gemini-2.0-flash"  # Default for testing
         api_key = api_key.strip()
 
         if HAS_TTKBOOTSTRAP:
@@ -716,81 +741,152 @@ class SettingsWindow:
                 result_label.config(text="No API key", foreground="red")
             return
 
-        try:
-            # Use the AIAPIManager to test, which now supports multi-provider logic
-            api_manager = AIAPIManager()
-            target_provider = api_manager._identify_provider(model_name, api_key) if provider == 'Auto' else provider.lower()
-            api_manager.test_connection(model_name, api_key, provider)
-            display_name = api_manager.get_display_name(target_provider)
+        api_manager = AIAPIManager()
 
-            # Check Vision Capability (image processing)
-            is_vision = MultimodalProcessor.is_vision_capable(model_name, target_provider)
-            # Any working API can handle text files
-            is_file_capable = True
+        # Determine which models and providers to try
+        models_to_try = []
+        detected_provider = ""
 
-            # Build capability status for label and message
-            capability_parts = []
-            if is_vision:
-                capability_parts.append("Image OK")
-            if is_file_capable:
-                capability_parts.append("Files OK")
-            capability_str = " | ".join(capability_parts) if capability_parts else ""
-            label_text = f"OK! {capability_str}" if capability_str else "OK!"
+        if provider == 'Auto':
+            # Detect provider from API key pattern first
+            detected_provider = self._detect_provider_from_key(api_key)
 
-            # Store capabilities in config
-            self.config.update_api_capabilities(api_key, model_name, is_vision, is_file_capable)
-
-            # Refresh toggle states (now auto-managed)
-            self._refresh_vision_toggle_state()
-            self._refresh_file_toggle_state()
-
-            # Build detailed message
-            capability_msg = ""
-            if is_vision:
-                capability_msg += "\n✓ Image Processing: Supported"
-            if is_file_capable:
-                capability_msg += "\n✓ File Processing: Supported"
-
-            if HAS_TTKBOOTSTRAP:
-                result_label.config(text=label_text, bootstyle="success")
-                if not silent:
-                    Messagebox.show_info(f"Connection Verified!\n\nProvider: {display_name}\nModel: {model_name}\nStatus: OK{capability_msg}", title="Test Result", parent=self.window)
+            if model_name and model_name != "Auto":
+                # Provider=Auto, Model=specific: try this model with detected provider
+                models_to_try = [(detected_provider if detected_provider else 'auto', model_name)]
+            elif detected_provider:
+                # Provider=Auto, Model=Auto: iterate through detected provider's models
+                provider_models = MODEL_PROVIDER_MAP.get(detected_provider, [])
+                if provider_models:
+                    # Try first 3 models of the detected provider
+                    models_to_try = [(detected_provider, m) for m in provider_models[:3]]
+                else:
+                    # Fallback to generic model
+                    models_to_try = [(detected_provider, "Auto")]
             else:
-                result_label.config(text=label_text, foreground="green")
-                if not silent:
-                    from tkinter import messagebox
-                    messagebox.showinfo("Test Result", f"Connection Verified!\n\nProvider: {display_name}\nModel: {model_name}\nStatus: OK{capability_msg}", parent=self.window)
-        except Exception as e:
-            error = str(e)
+                # No pattern detected (generic sk- key), try common providers
+                for prov in ['openai', 'deepseek', 'together', 'siliconflow']:
+                    prov_models = MODEL_PROVIDER_MAP.get(prov, [])
+                    if prov_models:
+                        models_to_try.append((prov, prov_models[0]))
+        else:
+            # Provider is specified
+            provider_lower = provider.lower()
+            if model_name and model_name != "Auto":
+                # Both specified: test this exact combination
+                models_to_try = [(provider_lower, model_name)]
+            else:
+                # Provider=specific, Model=Auto: iterate through that provider's models
+                provider_models = MODEL_PROVIDER_MAP.get(provider_lower, [])
+                if provider_models:
+                    # Try first 3 models of the specified provider
+                    models_to_try = [(provider_lower, m) for m in provider_models[:3]]
+                else:
+                    # No models defined for this provider, try with Auto
+                    models_to_try = [(provider_lower, "Auto")]
 
-            # Try to identify provider for error message
-            provider_name = "UNKNOWN"
+        # If no combinations determined, use default
+        if not models_to_try:
+            models_to_try = [('auto', 'gemini-2.0-flash')]
+
+        # Try each combination
+        last_error = ""
+        tried_count = 0
+        for try_provider, try_model in models_to_try:
+            tried_count += 1
             try:
-                code = (AIAPIManager()._identify_provider(model_name, api_key) if provider == 'Auto' else provider)
-                provider_name = AIAPIManager().get_display_name(code)
-            except Exception:
-                pass  # Keep default UNKNOWN if identification fails
+                # Update label to show progress
+                if len(models_to_try) > 1:
+                    if HAS_TTKBOOTSTRAP:
+                        result_label.config(text=f"Testing {tried_count}/{len(models_to_try)}...", bootstyle="warning")
+                    else:
+                        result_label.config(text=f"Testing {tried_count}/{len(models_to_try)}...", foreground="orange")
+                    self.window.update()
 
-            if "API_KEY_INVALID" in error:
+                # Test this combination
+                test_provider_arg = try_provider.capitalize() if try_provider != 'auto' else 'Auto'
+                api_manager.test_connection(try_model, api_key, test_provider_arg)
+
+                # SUCCESS! This combination works
+                target_provider = try_provider
+                display_name = api_manager.get_display_name(target_provider)
+
+                # Check Vision Capability
+                is_vision = MultimodalProcessor.is_vision_capable(try_model, target_provider)
+                is_file_capable = True
+
+                # Build capability status
+                capability_parts = []
+                if is_vision:
+                    capability_parts.append("Image OK")
+                if is_file_capable:
+                    capability_parts.append("Files OK")
+                capability_str = " | ".join(capability_parts) if capability_parts else ""
+                label_text = f"OK! {capability_str}" if capability_str else "OK!"
+
+                # Store capabilities in config
+                self.config.update_api_capabilities(api_key, try_model, is_vision, is_file_capable)
+
+                # Refresh toggle states
+                self._refresh_vision_toggle_state()
+                self._refresh_file_toggle_state()
+
+                # Update UI dropdowns with working combination if row_data provided
+                if row_data:
+                    row_data['provider_var'].set(display_name)
+                    row_data['model_var'].set(try_model)
+
+                # Build detailed message
+                capability_msg = ""
+                if is_vision:
+                    capability_msg += "\n✓ Image Processing: Supported"
+                if is_file_capable:
+                    capability_msg += "\n✓ File Processing: Supported"
+
                 if HAS_TTKBOOTSTRAP:
-                    result_label.config(text="Invalid Key", bootstyle="danger")
+                    result_label.config(text=label_text, bootstyle="success")
                     if not silent:
-                        Messagebox.show_error(f"Invalid API Key!\n\nProvider: {provider_name}\nModel: {model_name}\nError: {error}", title="Test Failed", parent=self.window)
+                        Messagebox.show_info(
+                            f"Connection Verified!\n\nProvider: {display_name}\nModel: {try_model}\nStatus: OK{capability_msg}",
+                            title="Test Result", parent=self.window)
                 else:
-                    result_label.config(text="Invalid Key", foreground="red")
+                    result_label.config(text=label_text, foreground="green")
                     if not silent:
                         from tkinter import messagebox
-                        messagebox.showerror("Test Failed", f"Invalid API Key!\n\nProvider: {provider_name}\nModel: {model_name}\nError: {error}", parent=self.window)
-            else:
-                if HAS_TTKBOOTSTRAP:
-                    result_label.config(text="Error", bootstyle="danger")
-                    if not silent:
-                        Messagebox.show_error(f"Connection Failed!\n\nProvider: {provider_name}\nModel: {model_name}\nError: {error}", title="Test Error", parent=self.window)
-                else:
-                    result_label.config(text="Error", foreground="red")
-                    if not silent:
-                        from tkinter import messagebox
-                        messagebox.showerror("Test Error", f"Connection Failed!\n\nProvider: {provider_name}\nModel: {model_name}\nError: {error}", parent=self.window)
+                        messagebox.showinfo(
+                            "Test Result",
+                            f"Connection Verified!\n\nProvider: {display_name}\nModel: {try_model}\nStatus: OK{capability_msg}",
+                            parent=self.window)
+                return  # Success, exit early
+
+            except Exception as e:
+                last_error = str(e)
+                logging.debug(f"Test failed for {try_provider}/{try_model}: {last_error}")
+                continue  # Try next combination
+
+        # All combinations failed
+        provider_name = detected_provider.upper() if detected_provider else "UNKNOWN"
+        if provider != 'Auto':
+            provider_name = provider.upper()
+
+        error_msg = (
+            f"All {tried_count} provider/model combinations failed.\n\n"
+            f"API Key Pattern: {detected_provider.upper() if detected_provider else 'Unknown'}\n"
+            f"Last Error: {last_error}\n\n"
+            f"Please check:\n"
+            f"• API key is correct and active\n"
+            f"• Provider/Model selection matches your API key"
+        )
+
+        if HAS_TTKBOOTSTRAP:
+            result_label.config(text="All Failed", bootstyle="danger")
+            if not silent:
+                Messagebox.show_error(error_msg, title="Test Failed", parent=self.window)
+        else:
+            result_label.config(text="All Failed", foreground="red")
+            if not silent:
+                from tkinter import messagebox
+                messagebox.showerror("Test Failed", error_msg, parent=self.window)
 
     def _refresh_vision_toggle_state(self):
         """Refresh vision toggle state based on API capabilities (auto-managed)."""

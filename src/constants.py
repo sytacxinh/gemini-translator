@@ -3,7 +3,7 @@ Constants and configuration values for CrossTrans.
 """
 
 # ============== VERSION ==============
-VERSION = "1.9.1"
+VERSION = "1.9.2"
 APP_NAME = "CrossTrans"
 GITHUB_REPO = "Masaru-urasaM/CrossTrans"
 FEEDBACK_URL = f"https://github.com/{GITHUB_REPO}/issues/new"
@@ -132,6 +132,27 @@ PROVIDERS_LIST = [
 
 # Maps specific model patterns to their native providers
 MODEL_PROVIDER_MAP = {
+    # === GOOGLE (Gemini) ===
+    'google': [
+        'gemini-2.0-flash', 'gemini-2.0-flash-exp', 'gemini-2.0-flash-thinking-exp',
+        'gemini-1.5-pro', 'gemini-1.5-pro-latest', 'gemini-1.5-pro-002',
+        'gemini-1.5-flash', 'gemini-1.5-flash-latest', 'gemini-1.5-flash-002', 'gemini-1.5-flash-8b',
+        'gemini-pro', 'gemini-pro-vision',
+    ],
+    # === OPENAI ===
+    'openai': [
+        'gpt-4o', 'gpt-4o-mini', 'gpt-4o-2024-11-20', 'gpt-4o-2024-08-06',
+        'gpt-4-turbo', 'gpt-4-turbo-preview', 'gpt-4-turbo-2024-04-09',
+        'gpt-4', 'gpt-4-0613', 'gpt-4-32k',
+        'gpt-3.5-turbo', 'gpt-3.5-turbo-0125', 'gpt-3.5-turbo-16k',
+        'o1', 'o1-preview', 'o1-mini', 'o3-mini',
+    ],
+    # === ANTHROPIC (Claude) ===
+    'anthropic': [
+        'claude-3-5-sonnet-20241022', 'claude-3-5-sonnet-latest',
+        'claude-3-5-haiku-20241022', 'claude-3-5-haiku-latest',
+        'claude-3-opus-20240229', 'claude-3-sonnet-20240229', 'claude-3-haiku-20240307',
+    ],
     # === GROQ ===
     'groq': [
         'llama-3.1-70b-versatile', 'llama-3.1-8b-instant', 'llama-3.2-1b-preview',
@@ -193,6 +214,15 @@ MODEL_PROVIDER_MAP = {
         'THUDM/glm-4-9b-chat', 'internlm/internlm2_5-7b-chat',
         '01-ai/Yi-1.5-9B-Chat', '01-ai/Yi-1.5-34B-Chat',
         'Pro/Qwen/Qwen2.5-7B-Instruct', 'Pro/deepseek-ai/DeepSeek-V3',
+    ],
+    # === OPENROUTER (aggregator - common models) ===
+    'openrouter': [
+        'openai/gpt-4o', 'openai/gpt-4-turbo', 'openai/gpt-3.5-turbo',
+        'anthropic/claude-3.5-sonnet', 'anthropic/claude-3-opus', 'anthropic/claude-3-haiku',
+        'google/gemini-pro', 'google/gemini-flash-1.5',
+        'meta-llama/llama-3.1-70b-instruct', 'meta-llama/llama-3.1-405b-instruct',
+        'mistralai/mistral-large', 'mistralai/mixtral-8x7b-instruct',
+        'deepseek/deepseek-chat', 'qwen/qwen-2.5-72b-instruct',
     ],
 }
 
