@@ -99,10 +99,12 @@ class WindowsHelloAuth:
 
 
 def verify_password(password: str) -> bool:
-    """Verify Windows password using LogonUserW API."""
-    if not password:
-        return False
+    """Verify Windows password using LogonUserW API.
 
+    Note: If the Windows account has no password, empty string will succeed.
+    """
+    # Don't return early for empty password - let LogonUserW handle it
+    # This allows accounts without password to authenticate with empty string
     try:
         username = os.environ.get('USERNAME', '')
         domain = os.environ.get('USERDOMAIN', '')

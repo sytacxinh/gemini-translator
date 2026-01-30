@@ -153,6 +153,56 @@ class ToastManager:
         """Convenience method for warning toast."""
         return self.show(message, ToastType.WARNING, duration)
 
+    def show_warning_with_shake(self, message: str, duration: Optional[int] = 3000) -> tk.Toplevel:
+        """Show warning toast with shake animation to grab attention.
+
+        Args:
+            message: Text to display
+            duration: Display duration in ms (default 3000)
+
+        Returns:
+            The toast Toplevel window
+        """
+        toast = self.show(message, ToastType.WARNING, duration)
+        # Start shake animation after fade-in completes
+        toast.after(250, lambda: self._shake_toast(toast, 0))
+        return toast
+
+    def _shake_toast(self, toast: tk.Toplevel, step: int) -> None:
+        """Animate toast with horizontal shake effect.
+
+        Args:
+            toast: The toast window to shake
+            step: Current animation step (0-7)
+        """
+        if not toast.winfo_exists() or step >= 8:
+            return
+
+        try:
+            # Get current position
+            geometry = toast.geometry()
+            # Parse geometry string: "WxH+X+Y" or "+X+Y"
+            if '+' in geometry:
+                parts = geometry.split('+')
+                x = int(parts[-2])
+                y = int(parts[-1])
+                size = '+'.join(parts[:-2]) if len(parts) > 2 else ''
+
+                # Shake pattern: right, left, right, left (decreasing amplitude)
+                offsets = [8, -8, 6, -6, 4, -4, 2, -2]
+                offset = offsets[step] if step < len(offsets) else 0
+
+                new_x = x + offset
+                if size:
+                    toast.geometry(f"{size}+{new_x}+{y}")
+                else:
+                    toast.geometry(f"+{new_x}+{y}")
+
+                # Schedule next shake frame (40ms = 25fps)
+                toast.after(40, lambda: self._shake_toast(toast, step + 1))
+        except (tk.TclError, ValueError):
+            pass  # Toast was destroyed or invalid geometry
+
     def dismiss_all(self) -> None:
         """Dismiss all active toasts immediately."""
         for toast in self.active_toasts[:]:  # Copy list to avoid modification during iteration

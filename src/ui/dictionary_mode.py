@@ -100,6 +100,7 @@ class WordButtonFrame:
     def __init__(self, parent, text: str, on_selection_change: Callable[[str], None],
                  on_lookup: Optional[Callable[[str], None]] = None,
                  on_expand: Optional[Callable[[], None]] = None,
+                 on_no_selection: Optional[Callable[[], None]] = None,
                  language: Optional[str] = None):
         """Initialize word button frame.
 
@@ -109,12 +110,14 @@ class WordButtonFrame:
             on_selection_change: Callback when selection changes (selected_text)
             on_lookup: Callback when lookup is triggered (selected_text)
             on_expand: Callback when expand button is clicked
+            on_no_selection: Callback when lookup clicked but no words selected
             language: Language for NLP tokenization (e.g., "Vietnamese", "Japanese")
         """
         self.parent = parent
         self.on_selection_change = on_selection_change
         self.on_lookup = on_lookup
         self.on_expand = on_expand
+        self.on_no_selection = on_no_selection
         self.language = language
         self.word_labels: list[WordLabel] = []
         self.selected_indices: set[int] = set()
@@ -336,12 +339,16 @@ class WordButtonFrame:
         """Trigger dictionary lookup for selected words with animation.
 
         Each selected word is looked up separately (not as a combined phrase).
+        If no words selected, calls on_no_selection callback.
         """
         words = self.get_selected_words()
         if words and self.on_lookup:
             self.start_lookup_animation()
             # Pass list of words for individual lookup
             self.on_lookup(words)
+        elif not words and self.on_no_selection:
+            # No words selected - notify parent to show warning
+            self.on_no_selection()
 
     def start_lookup_animation(self):
         """Start the lookup button animation."""

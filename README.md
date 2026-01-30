@@ -1,6 +1,6 @@
 # CrossTrans
 
-![Version](https://img.shields.io/badge/version-1.9.3-blue.svg)
+![Version](https://img.shields.io/badge/version-1.9.4-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.10+-yellow.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Platform](https://img.shields.io/badge/platform-Windows-informational.svg)
@@ -13,7 +13,7 @@ A powerful Windows desktop application for instant text translation using AI. Se
 
 - **Instant Translation** - Select text, press hotkey, get translation in tooltip
 - **Free Trial Mode** - 100 translations/day without API key
-- **13 AI Providers** - Google Gemini (free!), OpenAI, Claude, DeepSeek, Groq, and more
+- **14 AI Providers** - Google Gemini (free!), OpenAI, Claude, DeepSeek, Groq, HuggingFace, and more
 - **File Processing** - Translate documents (.docx, .txt, .srt, .pdf) and images
 - **120+ Languages** - Comprehensive language support
 - **Custom Hotkeys** - Configure any key combination for any language
@@ -60,6 +60,7 @@ A powerful Windows desktop application for instant text translation using AI. Se
 | **Together** | Llama 3.3, Qwen 2.5 | No |
 | **SiliconFlow** | Qwen 2.5, DeepSeek-V3 | Yes |
 | **OpenRouter** | 400+ models | Varies |
+| **HuggingFace** | Qwen 2.5, Llama 3.x, Gemma | Yes |
 
 **Smart Routing** - Automatically detects provider from API key or model name.
 
@@ -88,7 +89,7 @@ A powerful Windows desktop application for instant text translation using AI. Se
 
 ### Option 1: Download EXE (Recommended)
 1. Go to [Releases](https://github.com/Masaru-urasaM/CrossTrans/releases)
-2. Download `CrossTrans_v1.9.3.exe`
+2. Download the newest version of `CrossTrans.exe`
 3. Run the application
 4. Start translating immediately with trial mode, or enter your API key in Settings
 
@@ -262,12 +263,22 @@ CrossTrans/
 
 ---
 
-## What's New in v1.9.3
+## What's New in v1.9.4
 
-### Security & Stability
-- **Enhanced Trial mode security** - App context validation for proxy API
-- **Updated Google Gemini models** - Only active, free-tier models included
-- **Fixed Dictionary button color** - Now displays correct brown/red theme color
+### HuggingFace Provider Added
+- **New AI provider** - HuggingFace Inference API now supported
+- **14 AI providers** - Up from 13 in previous versions
+- **Models available** - Qwen 2.5, Llama 3.x, Mistral, Phi, Gemma, DeepSeek
+- **Trial mode enhanced** - HuggingFace added to fallback chain
+
+### Improvements
+- **Settings enhancement** - Test button now saves API key even on test failure
+- **Backend analytics** - Usage tracking for better service monitoring
+
+### Previous in v1.9.3
+- Enhanced Trial mode security with app context validation
+- Updated Google Gemini models (only active, free-tier)
+- Fixed Dictionary button color
 
 ### Previous in v1.9.2
 - **Dictionary Mode** - Interactive word selection with definitions, pronunciation, examples
@@ -302,7 +313,7 @@ python main.py
 ```bash
 pip install pyinstaller
 pyinstaller CrossTrans.spec
-# Output: dist/CrossTrans_v1.9.3.exe
+# Output: dist/CrossTrans_v1.9.4.exe
 ```
 
 ### Running Tests

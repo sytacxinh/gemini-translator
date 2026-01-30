@@ -1,6 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-# CrossTrans v1.9.0 - PyInstaller Build Configuration
+# CrossTrans v1.9.4 - PyInstaller Build Configuration
 # Build command: pyinstaller CrossTrans.spec --clean --noconfirm
 
 a = Analysis(
@@ -49,6 +49,56 @@ a = Analysis(
         'tkinter.test',
         # Unused standard library
         'lib2to3',
+
+        # ============================================
+        # NLP packages - downloaded on-demand by user
+        # DO NOT bundle in EXE
+        # ============================================
+        # Core NLP libraries
+        'spacy',
+        'spacy_legacy',
+        'spacy_loggers',
+        'jieba',
+        'fugashi',
+        'unidic',
+        'unidic_lite',
+        'underthesea',
+        'underthesea_core',
+        'ufal',
+        'ufal.udpipe',
+        'pythainlp',
+        'kiwipiepy',
+        'camel_tools',
+        # spaCy dependencies
+        'thinc',
+        'thinc_apple_ops',
+        'cymem',
+        'preshed',
+        'murmurhash',
+        'blis',
+        'wasabi',
+        'srsly',
+        'catalogue',
+        'typer',
+        'pathy',
+        'confection',
+        'spacy_pkuseg',
+        # Other NLP dependencies
+        'sudachipy',
+        'sudachidict_core',
+        'nagisa',
+        'konlpy',
+        'mecab',
+        'janome',
+        'pyvi',
+        'pymorphy2',
+        'pymorphy3',
+        'stanza',
+        'nltk',
+        'transformers',
+        'torch',
+        'tensorflow',
+        'keras',
     ],
     noarchive=False,
     optimize=1,  # Basic optimization

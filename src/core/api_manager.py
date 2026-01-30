@@ -350,6 +350,7 @@ class AIAPIManager:
             'Together': "https://api.together.xyz/v1/chat/completions",
             'SiliconFlow': "https://api.siliconflow.cn/v1/chat/completions",
             'OpenRouter': "https://openrouter.ai/api/v1/chat/completions",
+            'HuggingFace': "https://router.huggingface.co/v1/chat/completions",
         }
 
         if provider in base_urls:
@@ -375,7 +376,8 @@ class AIAPIManager:
             'SambaNova': 'SambaNova',
             'Together': 'Together AI',
             'SiliconFlow': 'SiliconFlow',
-            'OpenRouter': 'OpenRouter'
+            'OpenRouter': 'OpenRouter',
+            'HuggingFace': 'HuggingFace'
         }
         # Try exact match first, then case-insensitive lookup
         if provider_code in display_map:
@@ -759,6 +761,7 @@ class AIAPIManager:
             'Together': "https://api.together.xyz/v1/chat/completions",
             'SiliconFlow': "https://api.siliconflow.cn/v1/chat/completions",
             'OpenRouter': "https://openrouter.ai/api/v1/chat/completions",
+            'HuggingFace': "https://router.huggingface.co/v1/chat/completions",
         }
 
         if provider in base_urls:

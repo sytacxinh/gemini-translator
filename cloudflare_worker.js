@@ -15,8 +15,11 @@
  *    - CEREBRAS_API_KEY (primary)
  *    - SAMBANOVA_API_KEY (fallback 1)
  *    - GROQ_API_KEY (fallback 2)
- *    - GEMINI_API_KEY_FREE (fallback 3)
- *    - GEMINI_API_KEY_PAID (fallback 4)
+ *    - HUGGINGFACE_API_KEY (fallback 3)
+ *    - GEMINI_API_KEY_FREE (fallback 4)
+ *    - GEMINI_API_KEY_PAID (fallback 5)
+ *    - SUPABASE_URL (optional - for analytics)
+ *    - SUPABASE_SERVICE_KEY (optional - for analytics)
  * 4. Deploy
  */
 
@@ -47,6 +50,13 @@ const PROVIDERS = {
     envKey: 'GROQ_API_KEY',
     type: 'openai',
   },
+  huggingface: {
+    name: 'HuggingFace',
+    url: 'https://router.huggingface.co/v1/chat/completions',
+    model: 'meta-llama/Llama-3.1-70B-Instruct',
+    envKey: 'HUGGINGFACE_API_KEY',
+    type: 'openai',
+  },
   gemini_free: {
     name: 'Gemini (Free)',
     url: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent',
@@ -64,7 +74,35 @@ const PROVIDERS = {
 };
 
 // Provider fallback order
-const FALLBACK_ORDER = ['cerebras', 'sambanova', 'groq', 'gemini_free', 'gemini_paid'];
+const FALLBACK_ORDER = ['cerebras', 'sambanova', 'groq', 'huggingface', 'gemini_free', 'gemini_paid'];
+
+// ============= SUPABASE ANALYTICS LOGGING =============
+async function logToSupabase(env, logData) {
+  // Only log if Supabase is configured
+  if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_KEY) {
+    return;
+  }
+
+  try {
+    const response = await fetch(`${env.SUPABASE_URL}/rest/v1/usage_logs`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': env.SUPABASE_SERVICE_KEY,
+        'Authorization': `Bearer ${env.SUPABASE_SERVICE_KEY}`,
+        'Prefer': 'return=minimal'
+      },
+      body: JSON.stringify(logData)
+    });
+
+    if (!response.ok) {
+      console.error('Supabase log failed:', response.status);
+    }
+  } catch (error) {
+    // Don't throw - logging should not affect main request
+    console.error('Supabase log error:', error.message);
+  }
+}
 
 export default {
   async fetch(request, env) {
@@ -91,6 +129,7 @@ export default {
     try {
       // Get device ID for rate limiting
       const deviceId = request.headers.get('X-Device-ID') || 'unknown';
+      const startTime = Date.now();
 
       // Validate app context
       const appContext = request.headers.get('X-App-Context');
@@ -166,6 +205,18 @@ export default {
             incrementRateLimit(deviceId);
             usedProvider = provider.name;
 
+            // Log successful request to Supabase
+            await logToSupabase(env, {
+              device_id: deviceId,
+              provider_used: usedProvider,
+              success: true,
+              prompt_tokens: result.usage?.prompt_tokens || 0,
+              completion_tokens: result.usage?.completion_tokens || 0,
+              total_tokens: result.usage?.total_tokens || 0,
+              response_time_ms: Date.now() - startTime,
+              ip_country: request.cf?.country || 'unknown'
+            });
+
             return new Response(JSON.stringify(result), {
               status: 200,
               headers: {
@@ -189,7 +240,16 @@ export default {
         }
       }
 
-      // All providers failed
+      // All providers failed - log failure to Supabase
+      await logToSupabase(env, {
+        device_id: deviceId,
+        provider_used: null,
+        success: false,
+        error_message: lastError,
+        response_time_ms: Date.now() - startTime,
+        ip_country: request.cf?.country || 'unknown'
+      });
+
       return new Response(JSON.stringify({
         error: 'All translation providers are temporarily unavailable. Please try again later.',
         details: lastError

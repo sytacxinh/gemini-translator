@@ -23,7 +23,7 @@ except ImportError:
 
 from src.constants import VERSION, GITHUB_REPO, LANGUAGES, PROVIDERS_LIST, FEEDBACK_URL, MODEL_PROVIDER_MAP, API_KEY_PATTERNS
 from src.core.api_manager import AIAPIManager
-from src.utils.updates import check_for_updates, download_and_install_update, execute_update
+from src.utils.updates import AutoUpdater
 from src.core.multimodal import MultimodalProcessor
 from src.core.auth import require_auth
 
@@ -139,6 +139,7 @@ class SettingsWindow:
         self.custom_rows = []
         self.api_rows = []
         self.recording_language = None
+        self.updater = AutoUpdater()
 
         # Use tk.Toplevel for better compatibility
         self.window = tk.Toplevel(parent)
@@ -203,19 +204,15 @@ class SettingsWindow:
         notebook.add(guide_frame, text="  Guide  ")
         self._create_guide_tab(guide_frame)
 
-        # Buttons
+        # Close button only (auto-save handles all saves)
         btn_frame = ttk.Frame(self.window)
         btn_frame.pack(fill=X, padx=10, pady=(0, 10))
 
         if HAS_TTKBOOTSTRAP:
-            ttk.Button(btn_frame, text="Save", command=self._save,
-                       bootstyle="success", width=15).pack(side=RIGHT, padx=5)
-            ttk.Button(btn_frame, text="Cancel", command=self.window.destroy,
+            ttk.Button(btn_frame, text="Close", command=self.window.destroy,
                        bootstyle="secondary", width=15).pack(side=RIGHT)
         else:
-            ttk.Button(btn_frame, text="Save", command=self._save,
-                       width=15).pack(side=RIGHT, padx=5)
-            ttk.Button(btn_frame, text="Cancel", command=self.window.destroy,
+            ttk.Button(btn_frame, text="Close", command=self.window.destroy,
                        width=15).pack(side=RIGHT)
 
     def _create_api_tab(self, parent):
@@ -532,10 +529,14 @@ class SettingsWindow:
             canvas.config(scrollregion=canvas.bbox("all"))
 
     def _delete_api_row(self, row_frame, key_var):
-        """Delete an API row from UI."""
+        """Delete an API row from UI and auto-save to config."""
         row_frame.destroy()
         self.api_rows = [r for r in self.api_rows if r['key_var'] != key_var]
         self._update_api_add_button()
+
+        # AUTO-SAVE: Remove from config immediately
+        self._save_api_keys_to_config(notify_change=True)
+        logging.info("Auto-saved after deleting API row")
 
     def _delete_all_keys(self):
         """Clear all API keys but keep models, and save immediately."""
@@ -873,6 +874,13 @@ class SettingsWindow:
                             "Test Result",
                             f"Connection Verified!\n\nProvider: {display_name}\nModel: {try_model}\nStatus: OK{capability_msg}",
                             parent=self.window)
+                # AUTO-SAVE: Save this API row immediately after successful test
+                self._save_single_api_row(try_provider, try_model, api_key)
+
+                # Notify main app to refresh attachments (if callback provided)
+                if self.on_api_change_callback:
+                    self.on_api_change_callback()
+
                 return  # Success, exit early
 
             except Exception as e:
@@ -899,6 +907,10 @@ class SettingsWindow:
                 from tkinter import messagebox
                 messagebox.showerror("Test Failed", error_msg, parent=self.window)
 
+        # AUTO-SAVE: Save API row even if test failed (user requested)
+        self._save_single_api_row(provider, model_name, api_key)
+        logging.info(f"Auto-saved API key (test failed) for {provider}/{model_name}")
+
     def _refresh_vision_toggle_state(self):
         """Refresh vision toggle state based on API capabilities (auto-managed)."""
         try:
@@ -922,6 +934,75 @@ class SettingsWindow:
                 self.file_chk.configure(state='disabled')
         except Exception as e:
             logging.warning(f"Failed to refresh file toggle: {e}")
+
+    def _save_single_api_row(self, provider: str, model: str, api_key: str):
+        """Save a single API row to config (auto-save after successful test).
+
+        Args:
+            provider: Provider name
+            model: Model name
+            api_key: API key value
+        """
+        current_keys = self.config.get_api_keys()
+
+        # Find and update existing entry, or add new
+        found = False
+        for entry in current_keys:
+            # Match by API key (unique identifier)
+            if entry.get('api_key') == api_key:
+                entry['provider'] = provider
+                entry['model_name'] = model if model != 'Auto' else ''
+                found = True
+                break
+
+        if not found:
+            # Add as new entry
+            current_keys.append({
+                'provider': provider,
+                'model_name': model if model != 'Auto' else '',
+                'api_key': api_key
+            })
+
+        self.config.set_api_keys(current_keys)
+        logging.info(f"Auto-saved API key for {provider}/{model}")
+
+    def _save_all_hotkeys(self):
+        """Save all hotkeys to config (auto-save after recording)."""
+        hotkeys = {}
+
+        # 1. Default languages
+        for lang, entry_var in self.hotkey_entries.items():
+            value = entry_var.get().strip()
+            if value and value != "Press keys...":
+                hotkeys[lang] = value
+
+        # 2. Custom languages
+        for row in self.custom_rows:
+            lang = row['lang_var'].get().strip()
+            value = row['key_var'].get().strip()
+            if lang and value and value != "Press keys...":
+                hotkeys[lang] = value
+
+        self.config.set_hotkeys(hotkeys)
+        logging.info("Auto-saved hotkeys")
+
+    def _on_autostart_toggle(self):
+        """Handle autostart toggle with debounce for auto-save."""
+        # Cancel any pending save
+        if hasattr(self, '_autostart_timer'):
+            self.window.after_cancel(self._autostart_timer)
+        # Schedule save with 500ms debounce
+        self._autostart_timer = self.window.after(500, self._save_autostart)
+
+    def _save_autostart(self):
+        """Save autostart setting to config."""
+        self.config.set_autostart(self.autostart_var.get())
+        logging.info(f"Auto-saved autostart: {self.autostart_var.get()}")
+
+    def _on_updates_toggle(self):
+        """Handle check updates toggle - auto-save immediately."""
+        self.config.set_check_updates(self.updates_var.get())
+        logging.info(f"Auto-saved check_updates: {self.updates_var.get()}")
 
     def _create_hotkey_tab(self, parent):
         """Create hotkey settings tab."""
@@ -1177,6 +1258,9 @@ class SettingsWindow:
                     # Revert to previous value
                     previous = getattr(self, '_previous_hotkey', '')
                     entry_var.set(previous if previous and previous != "Press keys..." else "")
+                else:
+                    # Valid hotkey - auto-save immediately
+                    self._save_all_hotkeys()
 
                 if entry:
                     entry.config(state='readonly')
@@ -1185,26 +1269,30 @@ class SettingsWindow:
         """Create general settings tab."""
         ttk.Label(parent, text="General Settings", font=('Segoe UI', 12, 'bold')).pack(anchor=W)
 
-        # Auto-start
+        # Auto-start (with auto-save on toggle)
         ttk.Separator(parent).pack(fill=X, pady=15)
         self.autostart_var = tk.BooleanVar(value=self.config.is_autostart_enabled())
         if HAS_TTKBOOTSTRAP:
             ttk.Checkbutton(parent, text="Start CrossTrans with Windows",
                             variable=self.autostart_var,
+                            command=self._on_autostart_toggle,
                             bootstyle="round-toggle-success").pack(anchor=W, pady=5)
         else:
             ttk.Checkbutton(parent, text="Start CrossTrans with Windows",
-                            variable=self.autostart_var).pack(anchor=W, pady=5)
+                            variable=self.autostart_var,
+                            command=self._on_autostart_toggle).pack(anchor=W, pady=5)
 
-        # Check for updates
+        # Check for updates (with auto-save on toggle)
         self.updates_var = tk.BooleanVar(value=self.config.get_check_updates())
         if HAS_TTKBOOTSTRAP:
             ttk.Checkbutton(parent, text="Check for updates on startup",
                             variable=self.updates_var,
+                            command=self._on_updates_toggle,
                             bootstyle="round-toggle-success").pack(anchor=W, pady=5)
         else:
             ttk.Checkbutton(parent, text="Check for updates on startup",
-                            variable=self.updates_var).pack(anchor=W, pady=5)
+                            variable=self.updates_var,
+                            command=self._on_updates_toggle).pack(anchor=W, pady=5)
 
         # Check for updates button
         update_frame = ttk.Frame(parent)
@@ -2314,8 +2402,6 @@ class SettingsWindow:
             "4. Copy the generated key",
             "5. Open Settings > API Key tab > Paste in 'API Key' field",
             "6. Click 'Test' to verify the connection",
-            "",
-            "[Screenshots will be added here]",
         ])
 
         # === Section 3: Default Hotkeys ===
@@ -2530,7 +2616,7 @@ class SettingsWindow:
             self.on_save_callback()
 
     def _restore_defaults(self):
-        """Restore all settings to defaults (except API keys)."""
+        """Restore all settings to defaults (except API keys) and auto-save."""
         # Restore default hotkeys
         # Only for default languages
         for lang, entry_var in self.hotkey_entries.items():
@@ -2540,210 +2626,161 @@ class SettingsWindow:
         # Note: We don't delete custom rows here to avoid data loss,
         # but user can delete them manually.
 
-        # Restore general settings
+        # Auto-save hotkeys
+        self._save_all_hotkeys()
+
+        # Restore general settings and auto-save
         self.autostart_var.set(False)
         self.updates_var.set(False)
+        self.config.set_autostart(False)
+        self.config.set_check_updates(False)
+
+        logging.info("Restored defaults and auto-saved")
 
     def _check_for_updates_click(self):
-        """Handle Check for updates button click."""
+        """Handle Check for Updates button - runs full update flow."""
         self.check_update_btn.config(state='disabled')
-        self.update_status_label.config(text="Checking...")
+        self.update_status_label.config(text="Checking...", foreground='gray')
 
-        def check_async():
-            try:
-                result = check_for_updates()
-                self.window.after(0, lambda: self._show_update_result(result))
-            except Exception as e:
-                self.window.after(0, lambda: self._show_update_result({'error': str(e)}))
+        def run_update_flow():
+            # Step 1: Check for update
+            result = self.updater.check_update()
 
-        threading.Thread(target=check_async, daemon=True).start()
+            if result.get('error'):
+                self.window.after(0, lambda: self._update_status(
+                    f"Error: {result['error']}", 'red'))
+                return
 
-    def _show_update_result(self, result):
-        """Show update check result."""
-        self.check_update_btn.config(state='normal')
+            if not result.get('has_update'):
+                self.window.after(0, lambda: self._update_status(
+                    f"You're up to date (v{VERSION})", 'gray'))
+                return
 
-        if result.get('error'):
-            self.update_status_label.config(text=f"Error: {result['error']}", foreground="#991700")
-        elif result.get('available'):
-            new_version = result['version']
-            exe_url = result.get('exe_url')
-            self.update_status_label.config(text=f"v{new_version} available!", foreground='green')
+            # Has update - ask user
+            self.window.after(0, lambda: self._confirm_update(result['version']))
 
-            # Store for later use
-            self._pending_update = result
+        threading.Thread(target=run_update_flow, daemon=True).start()
 
-            # Check if auto-update is possible (exe version and exe_url available)
-            is_exe = getattr(sys, 'frozen', False)
+    def _confirm_update(self, new_version):
+        """Ask user to confirm update."""
+        is_exe = getattr(sys, 'frozen', False)
 
-            if is_exe and exe_url:
-                # Can auto-update
-                if HAS_TTKBOOTSTRAP:
-                    answer = Messagebox.yesno(
-                        f"A new version v{new_version} is available!\n\n"
-                        f"Current version: v{VERSION}\n\n"
-                        f"Do you want to download and install the update?\n"
-                        f"The application will restart automatically.",
-                        title="Update Available",
-                        parent=self.window
-                    )
-                    if answer == "Yes":
-                        self._start_download_update(exe_url, new_version)
-                else:
-                    from tkinter import messagebox
-                    answer = messagebox.askyesno(
-                        "Update Available",
-                        f"A new version v{new_version} is available!\n\n"
-                        f"Current version: v{VERSION}\n\n"
-                        f"Do you want to download and install the update?\n"
-                        f"The application will restart automatically.",
-                        parent=self.window
-                    )
-                    if answer:
-                        self._start_download_update(exe_url, new_version)
+        if not is_exe:
+            # Running from source - open download page
+            if HAS_TTKBOOTSTRAP:
+                answer = Messagebox.yesno(
+                    f"New version v{new_version} available!\n\n"
+                    f"Current: v{VERSION}\n\n"
+                    f"You're running from source.\n"
+                    f"Open download page?",
+                    title="Update Available", parent=self.window)
+                if answer == "Yes":
+                    webbrowser.open(f"https://github.com/{GITHUB_REPO}/releases/latest")
             else:
-                # Running from source or no exe in release - open download page
-                msg = f"A new version v{new_version} is available!\n\nCurrent version: v{VERSION}\n\n"
-                if not is_exe:
-                    msg += "You're running from source code.\n"
-                msg += "Do you want to open the download page?"
+                from tkinter import messagebox
+                if messagebox.askyesno("Update Available",
+                    f"New version v{new_version} available!\n\n"
+                    f"Current: v{VERSION}\n\n"
+                    f"You're running from source.\n"
+                    f"Open download page?", parent=self.window):
+                    webbrowser.open(f"https://github.com/{GITHUB_REPO}/releases/latest")
+            self._update_status(f"v{new_version} available", 'green')
+            return
 
-                if HAS_TTKBOOTSTRAP:
-                    answer = Messagebox.yesno(msg, title="Update Available", parent=self.window)
-                    if answer == "Yes":
-                        webbrowser.open(result['url'])
-                else:
-                    from tkinter import messagebox
-                    answer = messagebox.askyesno("Update Available", msg, parent=self.window)
-                    if answer:
-                        webbrowser.open(result['url'])
+        # Running as exe - offer auto-update
+        if HAS_TTKBOOTSTRAP:
+            answer = Messagebox.yesno(
+                f"New version v{new_version} available!\n\n"
+                f"Current: v{VERSION}\n\n"
+                f"Download and install now?",
+                title="Update Available", parent=self.window)
+            if answer != "Yes":
+                self._update_status(f"v{new_version} available", 'green')
+                return
         else:
-            self.update_status_label.config(text=f"You're up to date (v{VERSION})", foreground='gray')
+            from tkinter import messagebox
+            if not messagebox.askyesno("Update Available",
+                f"New version v{new_version} available!\n\n"
+                f"Current: v{VERSION}\n\n"
+                f"Download and install now?", parent=self.window):
+                self._update_status(f"v{new_version} available", 'green')
+                return
 
-    def _start_download_update(self, exe_url: str, new_version: str):
-        """Start downloading the update with progress dialog."""
-        # Create progress dialog
-        self.progress_window = tk.Toplevel(self.window)
-        self.progress_window.title("Downloading Update")
-        self.progress_window.geometry("400x150")
-        self.progress_window.resizable(False, False)
-        self.progress_window.transient(self.window)
-        self.progress_window.grab_set()
+        # User accepted - start download
+        self._start_update_download(new_version)
+
+    def _start_update_download(self, new_version):
+        """Download update with progress dialog."""
+        # Create progress window
+        self.progress_win = tk.Toplevel(self.window)
+        self.progress_win.title("Updating")
+        self.progress_win.geometry("350x120")
+        self.progress_win.resizable(False, False)
+        self.progress_win.transient(self.window)
+        self.progress_win.grab_set()
 
         # Center
-        self.progress_window.update_idletasks()
-        x = self.window.winfo_x() + (self.window.winfo_width() - 400) // 2
-        y = self.window.winfo_y() + (self.window.winfo_height() - 150) // 2
-        self.progress_window.geometry(f"+{x}+{y}")
+        self.progress_win.update_idletasks()
+        x = self.window.winfo_x() + (self.window.winfo_width() - 350) // 2
+        y = self.window.winfo_y() + (self.window.winfo_height() - 120) // 2
+        self.progress_win.geometry(f"+{x}+{y}")
 
-        frame = ttk.Frame(self.progress_window, padding=20)
+        frame = ttk.Frame(self.progress_win, padding=15)
         frame.pack(fill=BOTH, expand=True)
 
-        ttk.Label(frame, text=f"Downloading CrossTrans v{new_version}...",
-                  font=('Segoe UI', 10, 'bold')).pack(anchor=W)
-
-        self.progress_label = ttk.Label(frame, text="Starting download...")
-        self.progress_label.pack(anchor=W, pady=(10, 5))
+        self.progress_text = ttk.Label(frame, text=f"Downloading v{new_version}...")
+        self.progress_text.pack(anchor=W)
 
         if HAS_TTKBOOTSTRAP:
-            self.progress_bar = ttk.Progressbar(frame, length=350, mode='determinate',
-                                                 bootstyle="success-striped")
+            self.progress_bar = ttk.Progressbar(frame, length=320, bootstyle="success-striped")
         else:
-            self.progress_bar = ttk.Progressbar(frame, length=350, mode='determinate')
-        self.progress_bar.pack(fill=X, pady=5)
+            self.progress_bar = ttk.Progressbar(frame, length=320)
+        self.progress_bar.pack(fill=X, pady=10)
 
-        self.progress_percent = ttk.Label(frame, text="0%")
-        self.progress_percent.pack(anchor='e')
-
-        # Start download in thread
         def download_thread():
-            def progress_callback(percent, downloaded, total):
-                self.window.after(0, lambda: self._update_progress(percent, downloaded, total))
+            def on_progress(percent):
+                self.window.after(0, lambda p=percent: self._set_progress(p))
 
-            result = download_and_install_update(exe_url, new_version, progress_callback)
-            self.window.after(0, lambda: self._download_complete(result, new_version))
+            result = self.updater.download(on_progress)
+            self.window.after(0, lambda: self._on_download_done(result, new_version))
 
         threading.Thread(target=download_thread, daemon=True).start()
 
-    def _update_progress(self, percent, downloaded, total):
+    def _set_progress(self, percent):
         """Update progress bar."""
-        if hasattr(self, 'progress_bar') and self.progress_window.winfo_exists():
+        if hasattr(self, 'progress_bar') and hasattr(self, 'progress_win') and self.progress_win.winfo_exists():
             self.progress_bar['value'] = percent
-            self.progress_percent.config(text=f"{percent}%")
+            self.progress_text.config(text=f"Downloading... {percent}%")
 
-            # Format size
-            downloaded_mb = downloaded / (1024 * 1024)
-            total_mb = total / (1024 * 1024)
-            self.progress_label.config(text=f"Downloaded: {downloaded_mb:.1f} MB / {total_mb:.1f} MB")
-
-    def _download_complete(self, result, new_version):
+    def _on_download_done(self, result, new_version):
         """Handle download completion."""
-        if hasattr(self, 'progress_window') and self.progress_window.winfo_exists():
-            self.progress_window.destroy()
+        if hasattr(self, 'progress_win') and self.progress_win.winfo_exists():
+            self.progress_win.destroy()
 
-        if result.get('success'):
-            # Ask to install now
-            if HAS_TTKBOOTSTRAP:
-                answer = Messagebox.yesno(
-                    f"Download complete!\n\n"
-                    f"CrossTrans v{new_version} is ready to install.\n\n"
-                    f"The application will close and restart automatically.\n"
-                    f"Install now?",
-                    title="Install Update",
-                    parent=self.window
-                )
-                if answer == "Yes":
-                    self._execute_update(result['script_path'])
+        if not result.get('success'):
+            self._update_status(f"Download failed: {result.get('error', 'Unknown')}", 'red')
+            return
+
+        # Download success - ask to restart
+        if HAS_TTKBOOTSTRAP:
+            answer = Messagebox.yesno(
+                f"v{new_version} downloaded!\n\n"
+                f"Restart now to apply update?",
+                title="Ready to Install", parent=self.window)
+            if answer == "Yes":
+                self.updater.install_and_restart()
             else:
-                from tkinter import messagebox
-                answer = messagebox.askyesno(
-                    "Install Update",
-                    f"Download complete!\n\n"
-                    f"CrossTrans v{new_version} is ready to install.\n\n"
-                    f"The application will close and restart automatically.\n"
-                    f"Install now?",
-                    parent=self.window
-                )
-                if answer:
-                    self._execute_update(result['script_path'])
+                self._update_status("Restart app to apply update", '#0066cc')
         else:
-            # Download failed
-            error_msg = result.get('error', 'Unknown error')
-            self.update_status_label.config(text="Download failed", foreground="#991700")
-
-            if HAS_TTKBOOTSTRAP:
-                Messagebox.show_error(
-                    f"Failed to download update:\n\n{error_msg}\n\n"
-                    f"Please try again or download manually from GitHub.",
-                    title="Download Failed",
-                    parent=self.window
-                )
+            from tkinter import messagebox
+            if messagebox.askyesno("Ready to Install",
+                f"v{new_version} downloaded!\n\n"
+                f"Restart now to apply update?", parent=self.window):
+                self.updater.install_and_restart()
             else:
-                from tkinter import messagebox
-                messagebox.showerror(
-                    "Download Failed",
-                    f"Failed to download update:\n\n{error_msg}\n\n"
-                    f"Please try again or download manually from GitHub.",
-                    parent=self.window
-                )
+                self._update_status("Restart app to apply update", '#0066cc')
 
-    def _execute_update(self, script_path: str):
-        """Execute update and close application."""
-        self.update_status_label.config(text="Installing update...", foreground='blue')
-
-        # Close settings window
-        self.window.destroy()
-
-        # Execute update script (this will handle app restart)
-        execute_update(script_path)
-
-        # Exit the application - the batch script will restart it
-        # Find the main app and quit
-        try:
-            # Get root window and quit
-            root = self.window.master if hasattr(self, 'window') else None
-            if root:
-                root.after(500, lambda: os._exit(0))
-            else:
-                os._exit(0)
-        except Exception:
-            os._exit(0)  # Force exit even on error
+    def _update_status(self, text, color):
+        """Update status label and re-enable button."""
+        self.check_update_btn.config(state='normal')
+        self.update_status_label.config(text=text, foreground=color)

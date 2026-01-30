@@ -1,4 +1,4 @@
-CrossTrans v1.9.3 - Project Structure
+CrossTrans v1.9.4 - Project Structure
 ========================================
 
 gemini_translator_v4/
@@ -13,7 +13,7 @@ gemini_translator_v4/
     │
     ├── core/
     │   ├── clipboard.py     # ClipboardManager
-    │   ├── api_manager.py   # AIAPIManager (13 providers)
+    │   ├── api_manager.py   # AIAPIManager (14 providers)
     │   ├── translation.py   # TranslationService, dictionary_lookup()
     │   ├── hotkey.py        # HotkeyManager (global hotkeys)
     │   ├── history.py       # Translation history (100 entries)
@@ -90,7 +90,31 @@ Main app (tray, tooltip, popup) src/app.py
 Update checker                 src/utils/updates.py
 
 ========================================
-New Features in v1.9.3
+New Features in v1.9.4
+========================================
+
+1. HuggingFace Provider Added
+   - New AI provider: HuggingFace Inference API
+   - 14 AI providers now supported (was 13)
+   - Models: Qwen2.5 series, Llama 3.x, Mistral, Phi, Gemma, DeepSeek
+   - API endpoint: router.huggingface.co (new endpoint)
+
+2. Trial Mode Enhancement
+   - HuggingFace added to fallback chain
+   - Fallback order: Cerebras → SambaNova → Groq → HuggingFace → Gemini
+   - Default model: meta-llama/Llama-3.1-70B-Instruct
+
+3. Settings Improvements
+   - Test button now saves API key even on test failure
+   - Previously only saved on successful test
+
+4. Backend (Cloudflare Worker)
+   - Added Supabase analytics logging
+   - Track usage statistics per device
+   - Monitor provider performance
+
+========================================
+Previous Features (v1.9.3)
 ========================================
 
 1. Security Enhancement

@@ -49,7 +49,7 @@ from src.ui.history_dialog import HistoryDialog
 from src.ui.toast import ToastManager, ToastType
 from src.ui.tooltip import TooltipManager
 from src.ui.tray import TrayManager
-from src.utils.updates import check_for_updates
+from src.utils.updates import AutoUpdater
 from src.core.file_processor import FileProcessor
 from src.ui.attachments import AttachmentArea
 from src.core.multimodal import MultimodalProcessor
@@ -275,8 +275,8 @@ class TranslatorApp:
                 result = self.translation_service.dictionary_lookup_batch(filtered_words, target_lang)
                 # Get trial info after API call (quota may have changed)
                 trial_info = self.translation_service.get_trial_info()
-                # Show result in a new tooltip at mouse position
-                self.root.after(0, lambda: self._show_tooltip_dictionary_result(result, target_lang, trial_info))
+                # Show result in a new tooltip at mouse position (pass words for highlighting)
+                self.root.after(0, lambda: self._show_tooltip_dictionary_result(result, target_lang, trial_info, filtered_words))
             except Exception as e:
                 # Stop animation on error
                 self.root.after(0, lambda: self.tooltip_manager.stop_dictionary_animation())
@@ -285,11 +285,12 @@ class TranslatorApp:
         import threading
         threading.Thread(target=do_lookup, daemon=True).start()
 
-    def _show_tooltip_dictionary_result(self, result: str, target_lang: str, trial_info: dict = None):
+    def _show_tooltip_dictionary_result(self, result: str, target_lang: str, trial_info: dict = None,
+                                        looked_up_words: list = None):
         """Show dictionary result in a SEPARATE window (not replacing quick translate)."""
         # Create a new SEPARATE dictionary result window
         self.tooltip_manager.capture_mouse_position()
-        self.tooltip_manager.show_dictionary_result(result, target_lang, trial_info)
+        self.tooltip_manager.show_dictionary_result(result, target_lang, trial_info, looked_up_words)
 
     def show_main_window(self, icon=None, item=None):
         """Show main translator window from tray."""
@@ -479,6 +480,7 @@ class TranslatorApp:
         # ===== CONTENT FRAME (Pack after buttons to fill remaining space) =====
         content_frame = ttk.Frame(main_frame)
         content_frame.pack(side=TOP, fill=BOTH, expand=True)
+        self._content_frame = content_frame  # Save reference for dynamic attachment refresh
 
         # ===== ATTACHMENT AREA =====
         # Show if ANY API has vision or file capabilities (check flags set during API test)
@@ -500,6 +502,7 @@ class TranslatorApp:
 
         # ===== ORIGINAL TEXT =====
         original_header = ttk.Frame(content_frame)
+        self._original_header = original_header  # Save reference for attachment pack positioning
         original_header.pack(fill=X, anchor='w')
 
         ttk.Label(original_header, text="Original:", font=('Segoe UI', 10)).pack(side=LEFT)
@@ -635,6 +638,9 @@ class TranslatorApp:
         # Enable DnD for popup window - delay to ensure window is fully realized
         self.popup.after(300, lambda: self._setup_drop_handling(self.popup))
 
+        # Update title with trial info if in trial mode
+        self._update_popup_title_with_trial()
+
         self.popup.focus_force()
 
     def _populate_language_list(self):
@@ -718,6 +724,7 @@ class TranslatorApp:
             return
 
         if not original and not has_attachments:
+            self.toast.show_warning("No content to translate")
             return
 
         # Get custom prompt
@@ -871,6 +878,22 @@ IMPORTANT: Translate ALL text to {self.selected_language}. Process ALL files. Ex
         """Update translation result in popup."""
         self._update_translation_with_original(translated, "")
 
+    def _update_popup_title_with_trial(self):
+        """Update popup title to show trial mode quota if in trial mode."""
+        if not self.popup or not self.popup.winfo_exists():
+            return
+
+        try:
+            trial_info = self.translation_service.get_trial_info()
+            if trial_info and trial_info.get('is_trial'):
+                remaining = trial_info.get('remaining', 0)
+                daily_limit = trial_info.get('daily_limit', 50)
+                self.popup.title(f"CrossTrans - Trial Mode ({remaining}/{daily_limit} left)")
+            else:
+                self.popup.title("CrossTrans")
+        except Exception:
+            self.popup.title("CrossTrans")
+
     def _update_translation_with_original(self, translated: str, extracted_original: str = ""):
         """Update translation result and optionally the original text in popup."""
         # Stop animation
@@ -888,6 +911,9 @@ IMPORTANT: Translate ALL text to {self.selected_language}. Process ALL files. Ex
         self.trans_text.config(state='disabled')  # Make read-only again
         self.translate_btn.configure(text=f"Translate → {self.selected_language}",
                                      state='normal')
+
+        # Update title with trial info after each translation
+        self._update_popup_title_with_trial()
 
     def _start_translate_animation(self):
         """Start the translation button animation (dots + pulse)."""
@@ -1084,7 +1110,11 @@ IMPORTANT: Translate ALL text to {self.selected_language}. Process ALL files. Ex
         # Update status on text change
         expanded_text.bind('<KeyRelease>', update_status)
 
-        # Focus the window
+        # Bring window to front and focus it
+        expanded.lift()
+        expanded.attributes('-topmost', True)
+        expanded.update()
+        expanded.attributes('-topmost', False)
         expanded.focus_force()
         expanded_text.focus_set()
 
@@ -1158,9 +1188,9 @@ IMPORTANT: Translate ALL text to {self.selected_language}. Process ALL files. Ex
         dialog.transient(self.popup)
         dialog.grab_set()
 
-        # Center on screen
+        # Center on screen - increased height for button visibility
         dialog.update_idletasks()
-        w, h = 400, 180
+        w, h = 400, 220
         x = (dialog.winfo_screenwidth() - w) // 2
         y = (dialog.winfo_screenheight() - h) // 2
         dialog.geometry(f"{w}x{h}+{x}+{y}")
@@ -1250,9 +1280,9 @@ IMPORTANT: Translate ALL text to {self.selected_language}. Process ALL files. Ex
         dialog.transient(self.popup)
         dialog.grab_set()
 
-        # Center on screen
+        # Center on screen - increased height for better button visibility
         dialog.update_idletasks()
-        w, h = 380, 220
+        w, h = 380, 280
         x = (dialog.winfo_screenwidth() - w) // 2
         y = (dialog.winfo_screenheight() - h) // 2
         dialog.geometry(f"{w}x{h}+{x}+{y}")
@@ -1263,7 +1293,7 @@ IMPORTANT: Translate ALL text to {self.selected_language}. Process ALL files. Ex
         frame = ttk.Frame(dialog, padding=20)
         frame.pack(fill=BOTH, expand=True)
 
-        ttk.Label(frame, text="⚠️ Cannot detect language automatically",
+        ttk.Label(frame, text="⚠️ Cannot detect language",
                   font=('Segoe UI', 11, 'bold')).pack(pady=(0, 10))
 
         ttk.Label(frame, text="Select the source language:",
@@ -1323,9 +1353,24 @@ IMPORTANT: Translate ALL text to {self.selected_language}. Process ALL files. Ex
         from src.ui.dictionary_mode import WordButtonFrame
         from src.ui.tooltip import get_monitor_work_area
 
+        # Get current target language from UI selection (not config)
+        target_language = self.selected_language
+
+        # Build title with trial info if applicable
+        try:
+            trial_info = self.translation_service.get_trial_info()
+            if trial_info and trial_info.get('is_trial'):
+                remaining = trial_info.get('remaining', 0)
+                daily_limit = trial_info.get('daily_limit', 50)
+                title = f"Dictionary ({language} → {target_language}) - Trial Mode ({remaining}/{daily_limit} left)"
+            else:
+                title = f"Dictionary ({language} → {target_language})"
+        except Exception:
+            title = f"Dictionary ({language} → {target_language})"
+
         # Create popup window
         dict_popup = tk.Toplevel(self.root)
-        dict_popup.title(f"Dictionary ({language})")
+        dict_popup.title(title)
         dict_popup.configure(bg='#2b2b2b')
         dict_popup.attributes('-topmost', True)
         dict_popup.after(100, lambda: dict_popup.attributes('-topmost', False))
@@ -1369,22 +1414,36 @@ IMPORTANT: Translate ALL text to {self.selected_language}. Process ALL files. Ex
         ttk.Label(main_frame, text=f"Select words to look up ({language} NLP):",
                   font=('Segoe UI', 10)).pack(anchor='w', pady=(0, 10))
 
-        # Expand function
+        # Track expanded state for toggle
+        expanded_state = [False]
+        original_geometry = [f"{window_width}x{window_height}+{x}+{y}"]
+
+        # Expand/Collapse function
         def expand_dictionary():
-            # Resize window to larger size
-            dict_popup.geometry(f"1000x700")
-            # Center on work area
-            dict_popup.update_idletasks()
-            w = dict_popup.winfo_width()
-            h = dict_popup.winfo_height()
-            # Use work area from enclosing scope
-            cx = work_left + (work_right - work_left - w) // 2
-            cy = work_top + (work_bottom - work_top - h) // 2
-            dict_popup.geometry(f"{w}x{h}+{cx}+{cy}")
+            if expanded_state[0]:
+                # Collapse: restore original size
+                dict_popup.geometry(original_geometry[0])
+                expanded_state[0] = False
+                dict_frame.expand_btn.configure(text="⛶ Expand")
+            else:
+                # Expand: larger size
+                expanded_state[0] = True
+                dict_popup.geometry("1000x700")
+                # Center on work area
+                dict_popup.update_idletasks()
+                w = dict_popup.winfo_width()
+                h = dict_popup.winfo_height()
+                cx = work_left + (work_right - work_left - w) // 2
+                cy = work_top + (work_bottom - work_top - h) // 2
+                dict_popup.geometry(f"{w}x{h}+{cx}+{cy}")
+                dict_frame.expand_btn.configure(text="⛶ Collapse")
 
         # Word button frame with language for NLP tokenization
         def on_lookup(selected_words):
             self._do_dictionary_lookup(selected_words)
+
+        def on_no_selection():
+            self.toast.show_warning_with_shake("Please select a word first")
 
         dict_frame = WordButtonFrame(
             main_frame,
@@ -1392,6 +1451,7 @@ IMPORTANT: Translate ALL text to {self.selected_language}. Process ALL files. Ex
             on_selection_change=lambda t: None,
             on_lookup=on_lookup,
             on_expand=expand_dictionary,
+            on_no_selection=on_no_selection,
             language=language  # Pass language for NLP tokenization
         )
         dict_frame.set_exit_callback(dict_popup.destroy)
@@ -1423,25 +1483,26 @@ IMPORTANT: Translate ALL text to {self.selected_language}. Process ALL files. Ex
                 result = self.translation_service.dictionary_lookup_batch(words, target_lang)
                 # Get trial info after API call (quota may have changed)
                 trial_info = self.translation_service.get_trial_info()
-                # Show result in tooltip
-                self.popup.after(0, lambda: self._show_dictionary_result(result, target_lang, trial_info))
+                # Show result in tooltip (pass words for highlighting)
+                self.popup.after(0, lambda: self._show_dictionary_result(result, target_lang, trial_info, words))
             except Exception as e:
                 self.popup.after(0, lambda: self.toast.show_error(f"Lookup failed: {str(e)}"))
 
         import threading
         threading.Thread(target=do_lookup, daemon=True).start()
 
-    def _show_dictionary_result(self, result: str, target_lang: str, trial_info: dict = None):
+    def _show_dictionary_result(self, result: str, target_lang: str, trial_info: dict = None,
+                                looked_up_words: list = None):
         """Show dictionary lookup result in SEPARATE window."""
         # Use tooltip manager to show result in SEPARATE dictionary window
         self.tooltip_manager.capture_mouse_position()
-        self.tooltip_manager.show_dictionary_result(result, target_lang, trial_info)
+        self.tooltip_manager.show_dictionary_result(result, target_lang, trial_info, looked_up_words)
 
     def _open_in_gemini(self):
         """Open Gemini web with translation prompt."""
         original = self.original_text.get('1.0', tk.END).strip()
         if not original:
-            self.toast.show_warning("No text to translate")
+            self.toast.show_warning("No content to translate")
             return
 
         prompt = f"Translate the following text to {self.selected_language}:\n\n{original}"
@@ -1525,6 +1586,8 @@ IMPORTANT: Translate ALL text to {self.selected_language}. Process ALL files. Ex
         def on_api_change():
             """Called when API keys change - reconfigure to update trial mode status."""
             self.translation_service.reconfigure()
+            # Refresh attachment area in case API capabilities changed
+            self._refresh_attachment_area()
 
         self.settings_window = SettingsWindow(self.root, self.config, on_settings_save, on_api_change)
 
@@ -1536,6 +1599,45 @@ IMPORTANT: Translate ALL text to {self.selected_language}. Process ALL files. Ex
     def _refresh_tray_menu(self):
         """Refresh tray menu to reflect updated hotkeys."""
         self.tray_manager.refresh_menu()
+
+    def _refresh_attachment_area(self):
+        """Refresh attachment area based on current API capabilities.
+
+        Called when API keys are saved to immediately show/hide attachments icon
+        without requiring user to close and reopen the main window.
+        """
+        # Only refresh if popup window exists and is visible
+        if not hasattr(self, 'popup') or not self.popup or not self.popup.winfo_exists():
+            return
+
+        # Check current API capabilities
+        has_vision = self.config.has_any_vision_capable()
+        has_file = self.config.has_any_file_capable()
+
+        if has_vision or has_file:
+            # Should show attachment area
+            if not self.attachment_area:
+                try:
+                    # Create new AttachmentArea
+                    from src.ui.attachments import AttachmentArea
+                    self.popup.update_idletasks()
+                    self.attachment_area = AttachmentArea(
+                        self._content_frame, self.config, on_change=None
+                    )
+                    # Pack before the original_header (after content_frame top)
+                    self.attachment_area.pack(fill=X, pady=(0, 10), before=self._original_header)
+                except Exception as e:
+                    logging.error(f"Error creating AttachmentArea during refresh: {e}")
+                    self.attachment_area = None
+        else:
+            # Should hide attachment area
+            if self.attachment_area:
+                try:
+                    self.attachment_area.pack_forget()
+                    self.attachment_area.destroy()
+                except Exception:
+                    pass
+                self.attachment_area = None
 
     def _create_tray_icon(self):
         """Create system tray icon."""
@@ -1638,32 +1740,33 @@ IMPORTANT: Translate ALL text to {self.selected_language}. Process ALL files. Ex
         if not self.config.get_check_updates():
             return
 
-        update_info = check_for_updates()
-        if update_info['available']:
-            self.root.after(0, lambda: self._show_update_notification(update_info))
+        updater = AutoUpdater()
+        result = updater.check_update()
+        if result.get('has_update'):
+            self.root.after(0, lambda: self._show_update_notification(result['version']))
 
-    def _show_update_notification(self, update_info: Dict):
+    def _show_update_notification(self, new_version: str):
         """Show update notification."""
         if HAS_TTKBOOTSTRAP:
             result = Messagebox.yesno(
-                f"A new version ({update_info['version']}) is available!\n\n"
-                f"Current version: {VERSION}\n\n"
-                "Would you like to download it?",
+                f"New version v{new_version} available!\n\n"
+                f"Current: v{VERSION}\n\n"
+                "Open Settings to update?",
                 title="Update Available",
                 parent=self.root
             )
             if result == "Yes":
-                webbrowser.open(update_info['url'])
+                self._show_settings_tab("General")
         else:
             from tkinter import messagebox
             result = messagebox.askyesno(
                 "Update Available",
-                f"A new version ({update_info['version']}) is available!\n\n"
-                f"Current version: {VERSION}\n\n"
-                "Would you like to download it?"
+                f"New version v{new_version} available!\n\n"
+                f"Current: v{VERSION}\n\n"
+                "Open Settings to update?"
             )
             if result:
-                webbrowser.open(update_info['url'])
+                self._show_settings_tab("General")
 
     def _show_settings_tab(self, tab_name: str):
         """Open settings window and navigate to a specific tab.

@@ -27,7 +27,6 @@ class LanguagePack:
     post_install: Optional[str] = None  # command to run after install
     size_mb: int = 0
     module_check: str = ""  # module to import to check if installed
-    spacy_model: str = ""  # spaCy model name if using spaCy
     udpipe_model: str = ""  # UDPipe model name if using UDPipe
     category: str = "Other"  # Category for grouping in UI
 
@@ -112,7 +111,7 @@ UDPIPE_MODEL_URLS = {
 
 
 # Language packs organized by category
-# Using UDPipe for European languages (Python 3.14 compatible, replaces spaCy)
+# Using UDPipe for European languages (Python 3.14 compatible)
 # Specialized libraries for Asian languages where standard tokenization is inadequate
 
 LANGUAGE_PACKS: Dict[str, LanguagePack] = {
@@ -445,7 +444,6 @@ class NLPManager:
         self.config = config
         self._tokenizers: Dict[str, any] = {}
         self._installed_cache: Dict[str, bool] = {}
-        self._spacy_nlp_cache: Dict[str, any] = {}  # Cache loaded spaCy models
         self._udpipe_cache: Dict[str, any] = {}  # Cache loaded UDPipe models
 
     def set_config(self, config):
@@ -478,15 +476,6 @@ class NLPManager:
                 del sys.modules[module_name]
 
             importlib.import_module(pack.module_check)
-
-            # For spaCy languages, also check if model is downloaded
-            if pack.spacy_model:
-                import spacy
-                try:
-                    spacy.load(pack.spacy_model)
-                except OSError:
-                    self._installed_cache[language] = False
-                    return False
 
             # For UDPipe languages, check if model file exists
             if pack.udpipe_model:
@@ -608,7 +597,7 @@ class NLPManager:
                     logging.error(f"pip install error: {error_msg}")
                     return False, error_msg
 
-            # Run post-install command if needed (e.g., download spaCy model)
+            # Run post-install command if needed
             if pack.post_install:
                 if progress_callback:
                     progress_callback("Downloading language model...", 85)
@@ -638,7 +627,6 @@ class NLPManager:
             # Clear cache and update config
             self._installed_cache.pop(language, None)
             self._tokenizers.pop(language, None)
-            self._spacy_nlp_cache.pop(pack.spacy_model, None)
 
             if self.config:
                 installed = self.config.get('nlp_installed', [])
@@ -727,7 +715,7 @@ class NLPManager:
                   progress_callback: Optional[Callable[[str, int], None]] = None) -> Tuple[bool, str]:
         """Uninstall a language pack.
 
-        Actually removes pip packages and UDPipe/spaCy models.
+        Actually removes pip packages and UDPipe models.
         Shared packages (like ufal.udpipe) are NOT removed since they may be used
         by other languages.
 
@@ -749,8 +737,6 @@ class NLPManager:
             #    This MUST happen BEFORE pip uninstall or files may be locked
             self._installed_cache.pop(language, None)
             self._tokenizers.pop(language, None)
-            if pack.spacy_model:
-                self._spacy_nlp_cache.pop(pack.spacy_model, None)
 
             # Remove module from sys.modules to release file handles
             module_name = pack.module_check
@@ -772,9 +758,9 @@ class NLPManager:
                 del self._udpipe_cache[pack.udpipe_model]
 
             # Packages that are shared between languages - don't uninstall these
-            shared_packages = {'spacy', 'spacy-pkuseg', 'ufal.udpipe'}
+            shared_packages = {'ufal.udpipe'}
 
-            total_steps = len(pack.packages) + (1 if pack.spacy_model else 0) + (1 if pack.udpipe_model else 0)
+            total_steps = len(pack.packages) + (1 if pack.udpipe_model else 0)
             current_step = 0
 
             # 1. Remove UDPipe model file if present
@@ -794,37 +780,7 @@ class NLPManager:
                     except Exception as e:
                         logging.warning(f"Could not remove UDPipe model {model_path}: {e}")
 
-            # 3. Uninstall spaCy model if present (but not the spacy package itself)
-            if pack.spacy_model:
-                current_step += 1
-                progress = int((current_step / total_steps) * 80)
-
-                if progress_callback:
-                    progress_callback(f"Removing {pack.spacy_model}...", progress)
-
-                logging.info(f"Running: pip uninstall {pack.spacy_model} -y")
-                # Use Popen for more control over timeout
-                # CREATE_NO_WINDOW on Windows to prevent console popup
-                creation_flags = 0x08000000 if sys.platform == 'win32' else 0  # CREATE_NO_WINDOW
-                proc = subprocess.Popen(
-                    [sys.executable, "-m", "pip", "uninstall", pack.spacy_model, "-y"],
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    creationflags=creation_flags
-                )
-                try:
-                    _, stderr = proc.communicate(timeout=60)
-                    logging.info(f"pip uninstall {pack.spacy_model} returned: {proc.returncode}")
-                    if proc.returncode != 0:
-                        logging.warning(f"Could not uninstall spaCy model {pack.spacy_model}: {stderr}")
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.communicate()  # Clean up
-                    logging.error(f"Timeout uninstalling {pack.spacy_model}")
-
-            # 4. Uninstall pip packages (only those NOT shared)
+            # 2. Uninstall pip packages (only those NOT shared)
             for package in pack.packages:
                 if package not in shared_packages:
                     current_step += 1
@@ -1291,14 +1247,6 @@ class NLPManager:
             elif language == "Arabic":
                 from camel_tools.tokenizers.word import simple_word_tokenize
                 self._tokenizers[language] = lambda t: simple_word_tokenize(t)
-
-            # spaCy-based tokenizers
-            elif pack.spacy_model:
-                import spacy
-                if pack.spacy_model not in self._spacy_nlp_cache:
-                    self._spacy_nlp_cache[pack.spacy_model] = spacy.load(pack.spacy_model)
-                nlp = self._spacy_nlp_cache[pack.spacy_model]
-                self._tokenizers[language] = lambda t, nlp=nlp: [token.text for token in nlp(t)]
 
             # UDPipe-based tokenizers
             elif pack.udpipe_model:

@@ -16,6 +16,7 @@ except ImportError:
     HAS_TTKBOOTSTRAP = False
 
 from src.core.nlp_manager import nlp_manager
+from src.ui.toast import ToastManager
 
 # Dictionary button colors (dark red) - consistent with dictionary_mode.py
 DICT_BUTTON_COLOR = "#822312"  # Dark red (main color)
@@ -96,6 +97,7 @@ class TooltipManager:
         self.tooltip_text: Optional[tk.Text] = None
         self.tooltip_copy_btn: Optional[ttk.Button] = None
         self.tooltip_dict_btn: Optional[ttk.Button] = None
+        self.toast = ToastManager(root)  # For shake notifications
 
         # Mouse position captured when hotkey was pressed
         self._last_mouse_x = 0
@@ -652,47 +654,51 @@ class TooltipManager:
     def _show_nlp_required_message(self):
         """Show message that NLP pack is required with Install link."""
         msg_popup = tk.Toplevel(self.root)
-        msg_popup.title("Language Pack Required")
+        msg_popup.title("No Language Pack Installed")
         msg_popup.configure(bg='#2b2b2b')
         msg_popup.attributes('-topmost', True)
 
-        # Center and size
-        w, h = 350, 150
+        # Center and size - increased for better button visibility
+        w, h = 400, 220
         x = self._last_mouse_x - w // 2
         y = self._last_mouse_y - h // 2
         msg_popup.geometry(f"{w}x{h}+{x}+{y}")
 
-        frame = ttk.Frame(msg_popup, padding=15)
+        frame = ttk.Frame(msg_popup, padding=20)
         frame.pack(fill=BOTH, expand=True)
 
         ttk.Label(frame, text="⚠️ No Language Pack Installed",
-                  font=('Segoe UI', 11, 'bold')).pack(pady=(0, 8))
-        ttk.Label(frame, text="Install a language pack to use Dictionary mode.",
+                  font=('Segoe UI', 12, 'bold')).pack(pady=(0, 10))
+        ttk.Label(frame, text="Dictionary mode requires NLP language packs",
                   font=('Segoe UI', 10)).pack()
+        ttk.Label(frame, text="to tokenize text for word selection.",
+                  font=('Segoe UI', 10)).pack(pady=(0, 15))
 
-        # Clickable link to open Settings > Dictionary
+        # Open Settings button (same as main window)
         def open_settings_dict(e=None):
             msg_popup.destroy()
-            # Use direct callback to open Settings at Dictionary tab
             if self._on_open_settings_dictionary_tab:
                 self._on_open_settings_dictionary_tab()
             elif self._on_open_settings:
-                # Fallback to old behavior
                 self._on_open_settings()
                 self.root.after(300, self._try_open_dictionary_tab)
 
-        link = tk.Label(frame, text="→ Install now", fg='#4da6ff', bg='#2b2b2b',
-                       font=('Segoe UI', 10, 'underline'), cursor='hand2')
-        link.pack(pady=(5, 0))
-        link.bind('<Button-1>', open_settings_dict)
+        # Button frame
+        btn_frame = ttk.Frame(frame)
+        btn_frame.pack(fill=X, pady=(5, 0))
+
+        open_kwargs = {"text": "Open Dictionary Settings", "command": open_settings_dict, "width": 22}
+        if HAS_TTKBOOTSTRAP:
+            open_kwargs["bootstyle"] = "primary"
+        ttk.Button(btn_frame, **open_kwargs).pack(side=LEFT, padx=5)
 
         close_kwargs = {"text": "Close", "command": msg_popup.destroy, "width": 10}
         if HAS_TTKBOOTSTRAP:
             close_kwargs["bootstyle"] = "secondary"
-        ttk.Button(frame, **close_kwargs).pack(pady=(10, 0))
+        ttk.Button(btn_frame, **close_kwargs).pack(side=RIGHT, padx=5)
 
         msg_popup.bind('<Escape>', lambda e: msg_popup.destroy())
-        msg_popup.bind('<Return>', lambda e: msg_popup.destroy())
+        msg_popup.bind('<Return>', lambda e: open_settings_dict())
 
     def _show_language_selection_dialog(self, text_to_analyze: str, suggested_lang: str = None):
         """Show dialog to select source language for dictionary mode."""
@@ -706,8 +712,8 @@ class TooltipManager:
         dialog.configure(bg='#2b2b2b')
         dialog.attributes('-topmost', True)
 
-        # Center on screen
-        w, h = 380, 250
+        # Center on mouse position
+        w, h = 380, 300
         x = self._last_mouse_x - w // 2
         y = self._last_mouse_y - h // 2
         dialog.geometry(f"{w}x{h}+{x}+{y}")
@@ -732,7 +738,7 @@ class TooltipManager:
             if self._on_open_settings_dictionary_tab:
                 self._on_open_settings_dictionary_tab()
 
-        link_label = tk.Label(explain_frame, Ftext="Install more →",
+        link_label = tk.Label(explain_frame, text="Install more →",
                               font=('Segoe UI', 9, 'underline'), fg='#4da6ff',
                               bg='#2b2b2b', cursor='hand2')
         link_label.pack(side=LEFT, padx=(5, 0))
@@ -790,13 +796,16 @@ class TooltipManager:
         # Create popup window (ADDITIONAL - not replacing tooltip)
         dict_popup = tk.Toplevel(self.root)
 
+        # Get target language for title
+        target_lang = self._current_target_lang or "Unknown"
+
         # Set title with trial quota if in trial mode
         if trial_info and trial_info.get('is_trial'):
             remaining = trial_info.get('remaining', 0)
             daily_limit = trial_info.get('daily_limit', 50)
-            dict_popup.title(f"Dictionary ({language}) - Trial Mode ({remaining}/{daily_limit} left)")
+            dict_popup.title(f"Dictionary ({language} → {target_lang}) - Trial Mode ({remaining}/{daily_limit} left)")
         else:
-            dict_popup.title(f"Dictionary ({language})")
+            dict_popup.title(f"Dictionary ({language} → {target_lang})")
         dict_popup.configure(bg='#2b2b2b')
         dict_popup.attributes('-topmost', True)
         dict_popup.after(100, lambda: dict_popup.attributes('-topmost', False))
@@ -870,17 +879,29 @@ class TooltipManager:
         ttk.Label(main_frame, text=f"Select words to look up ({language} NLP):",
                   font=('Segoe UI', 10)).pack(anchor='w', pady=(0, 8))
 
-        # Expand function
+        # Track expanded state for toggle
+        expanded_state = [False]
+        original_geometry = [f"{popup_width}x{popup_height}+{x}+{y}"]
+
+        # Expand/Collapse function
         def expand_dictionary():
-            # Resize window to larger size
-            dict_popup.geometry(f"900x600")
-            # Center on screen
-            dict_popup.update_idletasks()
-            w = dict_popup.winfo_width()
-            h = dict_popup.winfo_height()
-            x = (screen_width - w) // 2
-            y = (screen_height - h) // 2
-            dict_popup.geometry(f"{w}x{h}+{x}+{y}")
+            if expanded_state[0]:
+                # Collapse: restore original size
+                dict_popup.geometry(original_geometry[0])
+                expanded_state[0] = False
+                dict_frame.expand_btn.configure(text="⛶ Expand")
+            else:
+                # Expand: larger size
+                expanded_state[0] = True
+                dict_popup.geometry("900x600")
+                # Center on work area
+                dict_popup.update_idletasks()
+                w = dict_popup.winfo_width()
+                h = dict_popup.winfo_height()
+                cx = work_left + (work_right - work_left - w) // 2
+                cy = work_top + (work_bottom - work_top - h) // 2
+                dict_popup.geometry(f"{w}x{h}+{cx}+{cy}")
+                dict_frame.expand_btn.configure(text="⛶ Collapse")
 
         # Word button frame with language for NLP tokenization
         def on_lookup(selected_words):
@@ -888,12 +909,17 @@ class TooltipManager:
             if self._on_dictionary_lookup:
                 self._on_dictionary_lookup(selected_words, self._current_target_lang)
 
+        def on_no_selection():
+            """Show shake toast when no word selected."""
+            self.toast.show_warning_with_shake("Please select a word first")
+
         dict_frame = WordButtonFrame(
             main_frame,
             text_to_analyze,
             on_selection_change=lambda t: None,
             on_lookup=on_lookup,
             on_expand=expand_dictionary,
+            on_no_selection=on_no_selection,
             language=language  # Pass language for NLP tokenization
         )
         dict_frame.set_exit_callback(dict_popup.destroy)
@@ -962,7 +988,8 @@ class TooltipManager:
             except Exception:
                 pass  # Frame might be destroyed
 
-    def show_dictionary_result(self, result: str, target_lang: str, trial_info: dict = None):
+    def show_dictionary_result(self, result: str, target_lang: str, trial_info: dict = None,
+                               looked_up_words: list = None):
         """Show dictionary lookup result in a SEPARATE window.
 
         This creates an independent window flagged as 'Dictionary' result,
@@ -973,6 +1000,7 @@ class TooltipManager:
             result: The dictionary lookup result text
             target_lang: The target language
             trial_info: Optional trial mode info dict for title bar display
+            looked_up_words: List of words that were looked up (for highlighting)
         """
         # Stop lookup animation first
         self.stop_dictionary_animation()
@@ -1081,6 +1109,56 @@ class TooltipManager:
                               width=width // 9, height=text_height,
                               borderwidth=0, highlightthickness=0)
         result_text.insert('1.0', result)
+
+        # Highlight looked-up words with distinct colors for each word
+        if looked_up_words:
+            # 20 professional colors - easy to distinguish, not too bright/dark
+            # Arranged so adjacent colors are visually distinct
+            HIGHLIGHT_COLORS = [
+                "#F4A261",  # Sandy orange
+                "#2EC4B6",  # Teal
+                "#E76F51",  # Coral red
+                "#90BE6D",  # Sage green
+                "#9D4EDD",  # Purple
+                "#F9C74F",  # Soft yellow
+                "#4CC9F0",  # Sky blue
+                "#FF6B6B",  # Soft red
+                "#43AA8B",  # Mint
+                "#FFB703",  # Amber
+                "#7B68EE",  # Medium slate blue
+                "#FF9F1C",  # Orange peel
+                "#00B4D8",  # Pacific cyan
+                "#E9C46A",  # Gold
+                "#80ED99",  # Light green
+                "#F72585",  # Pink
+                "#48CAE4",  # Light blue
+                "#FFAFCC",  # Light pink
+                "#A8DADC",  # Powder blue
+                "#CDB4DB",  # Soft lavender
+            ]
+
+            # Create a tag for each word with its own color
+            for i, word in enumerate(looked_up_words):
+                if not word:
+                    continue
+                # Cycle through colors if more words than colors
+                color = HIGHLIGHT_COLORS[i % len(HIGHLIGHT_COLORS)]
+                tag_name = f"lookup_word_{i}"
+
+                result_text.tag_configure(tag_name,
+                                          foreground=color,
+                                          font=('Segoe UI', 11, 'bold'))
+
+                # Find and highlight this word
+                start_idx = "1.0"
+                while True:
+                    pos = result_text.search(word, start_idx, stopindex="end", nocase=True)
+                    if not pos:
+                        break
+                    end_pos = f"{pos}+{len(word)}c"
+                    result_text.tag_add(tag_name, pos, end_pos)
+                    start_idx = end_pos
+
         result_text.config(state='disabled')
         result_text.pack(side=TOP, fill=BOTH, expand=True)
 

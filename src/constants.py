@@ -3,7 +3,7 @@ Constants and configuration values for CrossTrans.
 """
 
 # ============== VERSION ==============
-VERSION = "1.9.3"
+VERSION = "1.9.4"
 APP_NAME = "CrossTrans"
 GITHUB_REPO = "Masaru-urasaM/CrossTrans"
 FEEDBACK_URL = f"https://github.com/{GITHUB_REPO}/issues/new"
@@ -127,7 +127,7 @@ LANGUAGES = [
 PROVIDERS_LIST = [
     "Auto", "Google", "OpenAI", "Anthropic", "DeepSeek",
     "Groq", "xAI", "Mistral", "Perplexity", "Cerebras",
-    "SambaNova", "Together", "SiliconFlow", "OpenRouter"
+    "SambaNova", "Together", "SiliconFlow", "OpenRouter", "HuggingFace"
 ]
 
 # Maps specific model patterns to their native providers
@@ -300,6 +300,23 @@ MODEL_PROVIDER_MAP = {
         # Qwen
         'qwen/qwen-2.5-72b-instruct', 'qwen/qwq-32b-preview',
     ],
+    # === HUGGINGFACE ===
+    'HuggingFace': [
+        # Qwen Series
+        'Qwen/Qwen2.5-72B-Instruct', 'Qwen/Qwen2.5-32B-Instruct', 'Qwen/Qwen2.5-14B-Instruct',
+        'Qwen/Qwen2.5-7B-Instruct', 'Qwen/Qwen2.5-3B-Instruct', 'Qwen/Qwen2.5-Coder-32B-Instruct',
+        # Llama Series
+        'meta-llama/Llama-3.3-70B-Instruct', 'meta-llama/Llama-3.2-3B-Instruct',
+        'meta-llama/Llama-3.1-8B-Instruct', 'meta-llama/Llama-3.1-70B-Instruct',
+        # Mistral
+        'mistralai/Mistral-7B-Instruct-v0.3', 'mistralai/Mixtral-8x7B-Instruct-v0.1',
+        # Microsoft Phi
+        'microsoft/Phi-3-mini-4k-instruct', 'microsoft/Phi-3.5-mini-instruct',
+        # Google Gemma
+        'google/gemma-2-9b-it', 'google/gemma-2-27b-it',
+        # DeepSeek
+        'deepseek-ai/DeepSeek-R1-Distill-Qwen-32B',
+    ],
 }
 
 # API Key Patterns for provider detection
@@ -310,6 +327,7 @@ API_KEY_PATTERNS = {
     'xai-': 'xAI',            # xAI keys start with xai-
     'sk-or-v1-': 'OpenRouter', # OpenRouter keys
     'pplx-': 'Perplexity',    # Perplexity keys
+    'hf_': 'HuggingFace',     # HuggingFace keys start with hf_
     # Note: sk- is used by OpenAI, DeepSeek, Together, SiliconFlow - need model name
 }
 
@@ -331,7 +349,7 @@ VISION_MODELS = {
 # ============== TRIAL MODE ==============
 # Configuration for trial mode (users without API keys)
 TRIAL_MODE_ENABLED = True  # Set to False to disable trial mode completely
-TRIAL_DAILY_QUOTA = 50  # Maximum translations per day
+TRIAL_DAILY_QUOTA = 100  # Maximum translations per day
 TRIAL_PROVIDER = "cerebras"  # Provider for trial mode (Cerebras has generous free tier)
 TRIAL_MODEL = "llama-3.3-70b"  # Model for trial mode
 
