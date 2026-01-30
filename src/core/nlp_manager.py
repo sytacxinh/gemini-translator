@@ -9,13 +9,130 @@ Supports 30+ languages via:
 - Specialized libraries for Asian languages (Vietnamese, Japanese, Chinese, Korean, Thai)
 """
 import gc
+import os
+import shutil
 import subprocess
 import sys
+import time
 import importlib
 import re
 import logging
 from typing import Dict, List, Optional, Callable, Tuple
 from dataclasses import dataclass, field
+
+
+def is_frozen() -> bool:
+    """Check if running as PyInstaller frozen EXE."""
+    frozen = getattr(sys, 'frozen', False)
+    has_meipass = hasattr(sys, '_MEIPASS')
+    result = frozen or has_meipass
+    # Always log at INFO level to help debug EXE issues
+    logging.info(f"[FROZEN] frozen={frozen}, _MEIPASS={has_meipass}, result={result}")
+    return result
+
+
+def get_custom_packages_dir() -> str:
+    """Get custom directory for NLP packages when running as EXE.
+
+    EXE builds need a separate directory for pip packages because:
+    1. PyInstaller freezes imports - can't import from system site-packages
+    2. Avoids conflicts with source code development
+
+    Returns:
+        Path to custom packages directory (e.g., ~/.crosstrans/nlp_packages)
+    """
+    base_dir = os.path.join(os.path.expanduser("~"), ".crosstrans")
+    packages_dir = os.path.join(base_dir, "nlp_packages")
+
+    # Create directory if not exists
+    os.makedirs(packages_dir, exist_ok=True)
+
+    return packages_dir
+
+
+def setup_custom_packages_path():
+    """Add custom packages directory to sys.path for EXE builds.
+
+    This allows importing packages installed via pip --target.
+    Must be called early in app startup.
+    """
+    if is_frozen():
+        custom_dir = get_custom_packages_dir()
+        if custom_dir not in sys.path:
+            # Insert at beginning to prioritize custom packages
+            sys.path.insert(0, custom_dir)
+            logging.info(f"Added custom packages path: {custom_dir}")
+
+
+def get_python_executable() -> Optional[str]:
+    """Get the Python executable path.
+
+    When running as a PyInstaller EXE, sys.executable points to the EXE itself,
+    not the Python interpreter. In that case, we need to find the system Python.
+
+    Returns:
+        Path to Python executable, or None if not found
+    """
+    if not is_frozen():
+        # Running as normal Python script - sys.executable is correct
+        return sys.executable
+
+    # Running as EXE - need to find system Python
+    logging.info("Running as frozen EXE, searching for system Python...")
+
+    # Try common Python executable names
+    python_names = ['python', 'python3', 'py']
+
+    for name in python_names:
+        python_path = shutil.which(name)
+        if python_path:
+            # Verify it's actually Python by checking version
+            try:
+                result = subprocess.run(
+                    [python_path, '--version'],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
+                )
+                if result.returncode == 0 and 'Python' in result.stdout:
+                    logging.info(f"Found system Python: {python_path}")
+                    return python_path
+            except Exception:
+                continue
+
+    # Try Windows-specific paths
+    if sys.platform == 'win32':
+        # Check Python Launcher
+        py_launcher = shutil.which('py')
+        if py_launcher:
+            logging.info(f"Found Python Launcher: {py_launcher}")
+            return py_launcher
+
+        # Check common install locations
+        common_paths = [
+            os.path.expandvars(r'%LOCALAPPDATA%\Programs\Python\Python3*\python.exe'),
+            os.path.expandvars(r'%PROGRAMFILES%\Python3*\python.exe'),
+            os.path.expandvars(r'%PROGRAMFILES(X86)%\Python3*\python.exe'),
+        ]
+
+        import glob
+        for pattern in common_paths:
+            matches = glob.glob(pattern)
+            if matches:
+                # Sort to get latest version
+                matches.sort(reverse=True)
+                logging.info(f"Found Python at: {matches[0]}")
+                return matches[0]
+
+    logging.error("Could not find system Python executable")
+    return None
+
+
+# Initialize custom packages path at module load time
+logging.info(f"=== NLP Manager module loading: sys.executable={sys.executable} ===")
+logging.info(f"=== is_frozen()={is_frozen()} ===")
+setup_custom_packages_path()
 
 
 @dataclass
@@ -467,6 +584,9 @@ class NLPManager:
             return False
 
         try:
+            # Ensure custom packages path is set up (important for EXE builds)
+            setup_custom_packages_path()
+
             # Invalidate Python's import cache to detect newly installed packages
             importlib.invalidate_caches()
 
@@ -475,11 +595,25 @@ class NLPManager:
             if module_name in sys.modules:
                 del sys.modules[module_name]
 
+            # For EXE builds, also check if package exists in custom directory
+            if is_frozen():
+                custom_dir = get_custom_packages_dir()
+                # Check for package directory (e.g., underthesea, jieba, fugashi)
+                pkg_name = module_name.replace('.', os.sep)
+                pkg_path = os.path.join(custom_dir, pkg_name)
+                pkg_init = os.path.join(custom_dir, pkg_name, "__init__.py")
+                pkg_file = os.path.join(custom_dir, f"{pkg_name}.py")
+
+                if not (os.path.isdir(pkg_path) or os.path.exists(pkg_init) or os.path.exists(pkg_file)):
+                    # Package not found in custom dir
+                    logging.debug(f"Package {module_name} not found in custom dir: {custom_dir}")
+                    self._installed_cache[language] = False
+                    return False
+
             importlib.import_module(pack.module_check)
 
             # For UDPipe languages, check if model file exists
             if pack.udpipe_model:
-                import os
                 model_path = get_udpipe_model_path(pack.udpipe_model)
                 if not os.path.exists(model_path):
                     self._installed_cache[language] = False
@@ -577,6 +711,11 @@ class NLPManager:
             total_steps = len(pack.packages) + (1 if pack.post_install else 0)
             current_step = 0
 
+            # Get Python executable (handles frozen EXE case)
+            python_exe = get_python_executable()
+            if not python_exe:
+                return False, "Python not found. Please install Python and add it to PATH."
+
             # Install pip packages
             for package in pack.packages:
                 current_step += 1
@@ -585,35 +724,93 @@ class NLPManager:
                 if progress_callback:
                     progress_callback(f"Installing {package}...", progress)
 
-                result = subprocess.run(
-                    [sys.executable, "-m", "pip", "install", package, "--quiet"],
-                    capture_output=True,
-                    text=True,
-                    timeout=300  # 5 minute timeout
-                )
+                # Use Popen instead of run to avoid hanging on Windows
+                # when output buffers fill up
+                try:
+                    # Build pip command
+                    pip_cmd = [python_exe, "-m", "pip", "install", package,
+                               "--quiet", "--disable-pip-version-check"]
 
-                if result.returncode != 0:
-                    error_msg = result.stderr or f"Failed to install {package}"
-                    logging.error(f"pip install error: {error_msg}")
-                    return False, error_msg
+                    # For EXE builds, install to custom directory to avoid conflicts
+                    frozen = is_frozen()
+                    logging.info(f"=== Install {package}: is_frozen={frozen}, python_exe={python_exe} ===")
+
+                    if frozen:
+                        custom_dir = get_custom_packages_dir()
+                        pip_cmd.extend(["--target", custom_dir])
+                        logging.info(f"Installing {package} to custom dir: {custom_dir}")
+                    else:
+                        logging.info(f"Installing {package} to system site-packages (not frozen)")
+
+                    logging.info(f"pip command: {' '.join(pip_cmd)}")
+
+                    process = subprocess.Popen(
+                        pip_cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        stdin=subprocess.DEVNULL,  # Prevent stdin prompts
+                        text=True,
+                        creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
+                    )
+
+                    # Poll with timeout to avoid blocking indefinitely
+                    timeout_seconds = 300  # 5 minutes
+                    start_time = time.time()
+
+                    while process.poll() is None:
+                        if time.time() - start_time > timeout_seconds:
+                            process.kill()
+                            return False, f"Installation of {package} timed out"
+                        time.sleep(0.5)  # Check every 0.5 seconds
+
+                    # Get output after process completes
+                    stdout, stderr = process.communicate(timeout=10)
+
+                    if process.returncode != 0:
+                        error_msg = stderr or f"Failed to install {package}"
+                        logging.error(f"pip install error: {error_msg}")
+                        return False, error_msg
+
+                except Exception as e:
+                    logging.error(f"Error installing {package}: {e}")
+                    return False, f"Error installing {package}: {str(e)}"
 
             # Run post-install command if needed
             if pack.post_install:
                 if progress_callback:
                     progress_callback("Downloading language model...", 85)
 
-                result = subprocess.run(
-                    pack.post_install,
-                    shell=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=600  # 10 minute timeout for model download
-                )
+                try:
+                    process = subprocess.Popen(
+                        pack.post_install,
+                        shell=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        stdin=subprocess.DEVNULL,
+                        text=True,
+                        creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
+                    )
 
-                if result.returncode != 0:
-                    error_msg = result.stderr or "Failed to download language model"
-                    logging.error(f"Post-install error: {error_msg}")
-                    return False, error_msg
+                    # Poll with timeout
+                    timeout_seconds = 600  # 10 minutes for model download
+                    start_time = time.time()
+
+                    while process.poll() is None:
+                        if time.time() - start_time > timeout_seconds:
+                            process.kill()
+                            return False, "Language model download timed out"
+                        time.sleep(0.5)
+
+                    stdout, stderr = process.communicate(timeout=10)
+
+                    if process.returncode != 0:
+                        error_msg = stderr or "Failed to download language model"
+                        logging.error(f"Post-install error: {error_msg}")
+                        return False, error_msg
+
+                except Exception as e:
+                    logging.error(f"Post-install error: {e}")
+                    return False, f"Post-install error: {str(e)}"
 
             # Download UDPipe model if needed
             if pack.udpipe_model:
@@ -780,6 +977,9 @@ class NLPManager:
                     except Exception as e:
                         logging.warning(f"Could not remove UDPipe model {model_path}: {e}")
 
+            # Get Python executable (handles frozen EXE case)
+            python_exe = get_python_executable()
+
             # 2. Uninstall pip packages (only those NOT shared)
             for package in pack.packages:
                 if package not in shared_packages:
@@ -789,12 +989,43 @@ class NLPManager:
                     if progress_callback:
                         progress_callback(f"Removing {package}...", progress)
 
+                    # For EXE builds, directly remove from custom directory
+                    if is_frozen():
+                        custom_dir = get_custom_packages_dir()
+                        # Package name normalization (e.g., "unidic-lite" -> "unidic_lite")
+                        pkg_dir_name = package.replace('-', '_').lower()
+                        pkg_path = os.path.join(custom_dir, pkg_dir_name)
+
+                        if os.path.isdir(pkg_path):
+                            try:
+                                shutil.rmtree(pkg_path)
+                                logging.info(f"Removed package directory: {pkg_path}")
+                            except Exception as e:
+                                logging.warning(f"Could not remove {pkg_path}: {e}")
+
+                        # Also remove .dist-info directory
+                        import glob as glob_module
+                        dist_info_pattern = os.path.join(custom_dir, f"{pkg_dir_name}*.dist-info")
+                        for dist_dir in glob_module.glob(dist_info_pattern):
+                            try:
+                                shutil.rmtree(dist_dir)
+                                logging.info(f"Removed dist-info: {dist_dir}")
+                            except Exception as e:
+                                logging.warning(f"Could not remove {dist_dir}: {e}")
+                        continue
+
+                    # For source code, use pip uninstall
+                    # Skip uninstall if Python not found (packages installed externally)
+                    if not python_exe:
+                        logging.warning(f"Python not found, skipping pip uninstall of {package}")
+                        continue
+
                     logging.info(f"Running: pip uninstall {package} -y")
                     # Use Popen for more control over timeout
                     # CREATE_NO_WINDOW on Windows to prevent console popup
                     creation_flags = 0x08000000 if sys.platform == 'win32' else 0
                     proc = subprocess.Popen(
-                        [sys.executable, "-m", "pip", "uninstall", package, "-y"],
+                        [python_exe, "-m", "pip", "uninstall", package, "-y"],
                         stdin=subprocess.DEVNULL,
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,

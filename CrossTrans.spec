@@ -1,6 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-# CrossTrans v1.9.4 - PyInstaller Build Configuration
+# CrossTrans v1.9.6 - PyInstaller Build Configuration
 # Build command: pyinstaller CrossTrans.spec --clean --noconfirm
 
 a = Analysis(
@@ -42,13 +42,25 @@ a = Analysis(
         'pytest',
         'pytest_cov',
         'pytest_mock',
-        # Note: unittest is needed by pyparsing.testing (used by httplib2/google-generativeai)
         'test',
         'tests',
         # Unused tkinter modules
         'tkinter.test',
         # Unused standard library
         'lib2to3',
+
+        # ============================================
+        # Google Generative AI SDK (using REST API instead)
+        # ============================================
+        'google.generativeai',
+        'google.ai',
+        'google.api_core',
+        'google.auth',
+        'google.protobuf',
+        'grpc',
+        'grpcio',
+        'grpcio_status',
+        'proto',
 
         # ============================================
         # NLP packages - downloaded on-demand by user

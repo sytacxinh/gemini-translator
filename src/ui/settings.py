@@ -297,6 +297,8 @@ class SettingsWindow:
 
         ttk.Label(api_container, text="Delete All: Removes all API keys from storage permanently.",
                   font=('Segoe UI', 8), foreground='#888888').pack(anchor=W, pady=(5, 0))
+        ttk.Label(api_container, text="⚠ No API keys = Trial Mode (limited quota, may not work as expected)",
+                  font=('Segoe UI', 8, 'italic'), foreground='#ff9900').pack(anchor=W, pady=(2, 0))
 
         # ===== CAPABILITY STATUS (Auto-managed) =====
         ttk.Separator(api_container).pack(fill=X, pady=15)
@@ -875,7 +877,7 @@ class SettingsWindow:
                             f"Connection Verified!\n\nProvider: {display_name}\nModel: {try_model}\nStatus: OK{capability_msg}",
                             parent=self.window)
                 # AUTO-SAVE: Save this API row immediately after successful test
-                self._save_single_api_row(try_provider, try_model, api_key)
+                self._save_single_api_row(try_provider, try_model, api_key, row_data)
 
                 # Notify main app to refresh attachments (if callback provided)
                 if self.on_api_change_callback:
@@ -908,7 +910,7 @@ class SettingsWindow:
                 messagebox.showerror("Test Failed", error_msg, parent=self.window)
 
         # AUTO-SAVE: Save API row even if test failed (user requested)
-        self._save_single_api_row(provider, model_name, api_key)
+        self._save_single_api_row(provider, model_name, api_key, row_data)
         logging.info(f"Auto-saved API key (test failed) for {provider}/{model_name}")
 
     def _refresh_vision_toggle_state(self):
@@ -935,36 +937,55 @@ class SettingsWindow:
         except Exception as e:
             logging.warning(f"Failed to refresh file toggle: {e}")
 
-    def _save_single_api_row(self, provider: str, model: str, api_key: str):
+    def _save_single_api_row(self, provider: str, model: str, api_key: str, row_data=None):
         """Save a single API row to config (auto-save after successful test).
+
+        This rebuilds the entire API keys list from UI rows to ensure correct order.
 
         Args:
             provider: Provider name
             model: Model name
             api_key: API key value
+            row_data: Row data dict that was updated (used to update the UI vars)
         """
-        current_keys = self.config.get_api_keys()
+        # Update the row_data with test results if provided
+        if row_data:
+            row_data['provider_var'].set(provider)
+            if model != 'Auto':
+                row_data['model_var'].set(model)
 
-        # Find and update existing entry, or add new
-        found = False
-        for entry in current_keys:
-            # Match by API key (unique identifier)
-            if entry.get('api_key') == api_key:
-                entry['provider'] = provider
-                entry['model_name'] = model if model != 'Auto' else ''
-                found = True
-                break
+        # Rebuild entire list from UI rows (preserves exact order)
+        # This is the same approach as _save_api_keys_to_config
+        existing_keys = {
+            (cfg.get('api_key', ''), cfg.get('model_name', '')): cfg
+            for cfg in self.config.get_api_keys()
+        }
 
-        if not found:
-            # Add as new entry
-            current_keys.append({
-                'provider': provider,
-                'model_name': model if model != 'Auto' else '',
-                'api_key': api_key
-            })
+        api_keys_list = []
+        for row in self.api_rows:
+            row_model = row['model_var'].get().strip()
+            row_key = row['key_var'].get().strip()
+            row_provider = row['provider_var'].get()
 
-        self.config.set_api_keys(current_keys)
-        logging.info(f"Auto-saved API key for {provider}/{model}")
+            # Save "Auto" as empty string
+            if row_model == "Auto":
+                row_model = ''
+
+            if row_model or row_key:  # Only save if there's actual data
+                new_config = {'model_name': row_model, 'api_key': row_key, 'provider': row_provider}
+
+                # Preserve capability flags from existing config
+                existing = existing_keys.get((row_key, row_model))
+                if existing:
+                    if 'vision_capable' in existing:
+                        new_config['vision_capable'] = existing['vision_capable']
+                    if 'file_capable' in existing:
+                        new_config['file_capable'] = existing['file_capable']
+
+                api_keys_list.append(new_config)
+
+        self.config.set_api_keys(api_keys_list)
+        logging.info(f"Auto-saved API key for {provider}/{model} (total {len(api_keys_list)} keys)")
 
     def _save_all_hotkeys(self):
         """Save all hotkeys to config (auto-save after recording)."""
@@ -1789,7 +1810,6 @@ class SettingsWindow:
 
         # Show progress bar at top of tab (before installed section)
         self.nlp_progress_frame.pack(fill=X, pady=(0, 15), before=self.installed_frame)
-        self.nlp_progress_label.config(text=f"⏳ Installing {language} (~{size_mb} MB)...")
         self.nlp_progress_bar['value'] = 0
         if HAS_TTKBOOTSTRAP:
             self.nlp_progress_bar.configure(bootstyle="info-striped")
@@ -1800,12 +1820,17 @@ class SettingsWindow:
 
         # Start animated progress simulation
         self._progress_animation_running = True
+        self._nlp_install_base_text = f"Installing {language} (~{size_mb} MB)"
         self._animate_progress(0)
+        self._animate_install_text(0)
 
         # Run installation in thread
         def do_install():
             def progress_callback(message: str, percent: int):
-                self.window.after(0, lambda m=message, p=percent: self._update_install_progress(m, p))
+                # Update base text for animation (remove trailing dots)
+                base_msg = message.rstrip('.')
+                self._nlp_install_base_text = base_msg
+                self.window.after(0, lambda p=percent: self._update_install_progress_bar(p))
 
             success, error = nlp_manager.install(language, progress_callback)
             self._progress_animation_running = False
@@ -1823,10 +1848,47 @@ class SettingsWindow:
             self.nlp_progress_bar['value'] = value
             self.window.after(200, lambda: self._animate_progress(value + 2))
 
-    def _update_install_progress(self, message: str, percent: int):
-        """Update installation progress UI."""
+    def _animate_install_text(self, state: int):
+        """Animate the 'Installing...' text with moving dots and color change."""
+        if not self._progress_animation_running:
+            return
+
         try:
-            self.nlp_progress_label.config(text=f"⏳ {message}")
+            # Dot patterns for animation: . -> .. -> ... -> .... -> ...
+            dot_patterns = ['.', '..', '...', '....', '...', '..']
+            dots = dot_patterns[state % len(dot_patterns)]
+
+            # Color cycling (cyan -> blue -> purple -> magenta -> blue -> cyan)
+            colors = ['#00bcd4', '#2196f3', '#9c27b0', '#e91e63', '#673ab7', '#03a9f4']
+            color = colors[state % len(colors)]
+
+            # Get base text
+            base_text = getattr(self, '_nlp_install_base_text', 'Installing')
+            display_text = f"⏳ {base_text}{dots}"
+
+            # Update label with new text and color
+            self.nlp_progress_label.config(text=display_text, foreground=color)
+
+            # Schedule next animation frame (300ms interval)
+            self.window.after(300, lambda: self._animate_install_text(state + 1))
+
+        except tk.TclError:
+            pass  # Widget destroyed
+
+    def _update_install_progress_bar(self, percent: int):
+        """Update only the progress bar value."""
+        try:
+            if percent > 0:
+                self.nlp_progress_bar['value'] = percent
+        except tk.TclError:
+            pass
+
+    def _update_install_progress(self, message: str, percent: int):
+        """Update installation progress UI (for bulk operations)."""
+        try:
+            # Update base text for animation (remove trailing dots)
+            base_msg = message.rstrip('.')
+            self._nlp_install_base_text = base_msg
             if percent > 0:
                 self.nlp_progress_bar['value'] = percent
         except tk.TclError:
@@ -1859,8 +1921,8 @@ class SettingsWindow:
             # Update config
             self.config.add_nlp_installed(language)
 
-            # Show success animation in progress bar
-            self.nlp_progress_label.config(text=f"✓ {language} installed successfully!")
+            # Show success animation in progress bar (reset color to green)
+            self.nlp_progress_label.config(text=f"✓ {language} installed successfully!", foreground='#28a745')
             self.nlp_progress_bar['value'] = 100
 
             # Flash green color effect
@@ -1934,7 +1996,6 @@ class SettingsWindow:
 
         # Show progress bar at top (before installed section)
         self.nlp_progress_frame.pack(fill=X, pady=(0, 15), before=self.installed_frame)
-        self.nlp_progress_label.config(text=f"⏳ Removing {language}...")
         self.nlp_progress_bar['value'] = 0
         if HAS_TTKBOOTSTRAP:
             self.nlp_progress_bar.configure(bootstyle="warning-striped")
@@ -1942,14 +2003,17 @@ class SettingsWindow:
 
         # Start animation (same pattern as install)
         self._progress_animation_running = True
+        self._nlp_install_base_text = f"Removing {language}"
         self._animate_progress(0)
+        self._animate_install_text(0)
 
         # Run uninstall in background thread
         def do_uninstall():
             def progress_callback(message: str, percent: int):
                 def update_ui():
                     try:
-                        self.nlp_progress_label.config(text=f"⏳ {message}")
+                        base_msg = message.rstrip('.')
+                        self._nlp_install_base_text = base_msg
                         self.nlp_progress_bar['value'] = percent
                     except tk.TclError:
                         pass
@@ -1969,9 +2033,9 @@ class SettingsWindow:
                     # Update config
                     self.config.remove_nlp_installed(language)
 
-                    # Show success animation
+                    # Show success animation (reset color to green)
                     self.nlp_progress_bar['value'] = 100
-                    self.nlp_progress_label.config(text=f"✓ {language} removed successfully!")
+                    self.nlp_progress_label.config(text=f"✓ {language} removed successfully!", foreground='#28a745')
                     if HAS_TTKBOOTSTRAP:
                         self.nlp_progress_bar.configure(bootstyle="success")
                     self.window.update()
@@ -2090,7 +2154,6 @@ class SettingsWindow:
         # Show progress bar
         self._nlp_operation_in_progress = True
         self.nlp_progress_frame.pack(fill=X, pady=(0, 15), before=self.installed_frame)
-        self.nlp_progress_label.config(text=f"⏳ Installing {language} ({self._bulk_install_current}/{self._bulk_install_total})...")
         self.nlp_progress_bar['value'] = 0
         if HAS_TTKBOOTSTRAP:
             self.nlp_progress_bar.configure(bootstyle="info-striped")
@@ -2098,7 +2161,9 @@ class SettingsWindow:
 
         self._disable_all_nlp_buttons()
         self._progress_animation_running = True
+        self._nlp_install_base_text = f"Installing {language} ({self._bulk_install_current}/{self._bulk_install_total})"
         self._animate_progress(0)
+        self._animate_install_text(0)
 
         def do_install():
             def progress_callback(message: str, percent: int):
@@ -2115,7 +2180,7 @@ class SettingsWindow:
         """Handle completion of one language in bulk install."""
         if success:
             self.nlp_progress_bar['value'] = 100
-            self.nlp_progress_label.config(text=f"✓ {language} installed!")
+            self.nlp_progress_label.config(text=f"✓ {language} installed!", foreground='#28a745')
             if HAS_TTKBOOTSTRAP:
                 self.nlp_progress_bar.configure(bootstyle="success")
             self.window.update()
@@ -2206,7 +2271,6 @@ class SettingsWindow:
         # Show progress bar
         self._nlp_operation_in_progress = True
         self.nlp_progress_frame.pack(fill=X, pady=(0, 15), before=self.installed_frame)
-        self.nlp_progress_label.config(text=f"⏳ Removing {language} ({self._bulk_delete_current}/{self._bulk_delete_total})...")
         self.nlp_progress_bar['value'] = 0
         if HAS_TTKBOOTSTRAP:
             self.nlp_progress_bar.configure(bootstyle="warning-striped")
@@ -2214,7 +2278,9 @@ class SettingsWindow:
 
         self._disable_all_nlp_buttons()
         self._progress_animation_running = True
+        self._nlp_install_base_text = f"Removing {language} ({self._bulk_delete_current}/{self._bulk_delete_total})"
         self._animate_progress(0)
+        self._animate_install_text(0)
 
         def do_uninstall():
             def progress_callback(message: str, percent: int):
@@ -2235,7 +2301,7 @@ class SettingsWindow:
             nlp_manager._installed_cache.clear()
             self.config.remove_nlp_installed(language)
             self.nlp_progress_bar['value'] = 100
-            self.nlp_progress_label.config(text=f"✓ {language} removed!")
+            self.nlp_progress_label.config(text=f"✓ {language} removed!", foreground='#28a745')
             if HAS_TTKBOOTSTRAP:
                 self.nlp_progress_bar.configure(bootstyle="success")
             self.window.update()

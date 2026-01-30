@@ -1,4 +1,4 @@
-CrossTrans v1.9.4 - Project Structure
+CrossTrans v1.9.6 - Project Structure
 ========================================
 
 gemini_translator_v4/
@@ -90,7 +90,40 @@ Main app (tray, tooltip, popup) src/app.py
 Update checker                 src/utils/updates.py
 
 ========================================
-New Features in v1.9.4
+New Features in v1.9.6
+========================================
+
+1. Critical Bug Fix
+   - Fixed Dictionary Language Pack installation in EXE builds
+   - Root cause: sys.executable pointed to EXE instead of Python interpreter
+   - New: Auto-detects system Python when running from EXE
+   - Searches PATH, Python Launcher (py), and common install locations
+
+2. Technical Changes
+   - Added get_python_executable() helper function in nlp_manager.py
+   - Proper handling of frozen/PyInstaller environment detection
+   - Graceful fallback when Python not found in PATH
+
+========================================
+Previous Features (v1.9.5)
+========================================
+
+1. Bug Fixes
+   - Fixed API Key saving: Primary key no longer moves to Backup position
+   - Fixed Dictionary Language Pack installation hanging issue
+   - Replaced subprocess.run with subprocess.Popen for better control
+
+2. UI Improvements
+   - Animated "Installing..." text with moving dots and color cycling
+   - Added Trial Mode warning in API Key tab
+   - Google provider now uses REST API (SDK removed, EXE 30MB smaller)
+
+3. Settings Tab
+   - API Key row position preserved when testing/saving
+   - Trial Mode warning: "No API keys = Trial Mode (limited quota)"
+
+========================================
+Previous Features (v1.9.4 and earlier)
 ========================================
 
 1. HuggingFace Provider Added

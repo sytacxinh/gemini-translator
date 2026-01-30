@@ -9,7 +9,7 @@ import urllib.error
 import logging
 from typing import Optional, List, Dict, Any, Callable, TYPE_CHECKING
 
-import google.generativeai as genai
+import base64
 
 from src.constants import MODEL_PROVIDER_MAP, API_KEY_PATTERNS
 from src.core.multimodal import MultimodalProcessor
@@ -314,6 +314,108 @@ class AIAPIManager:
             timeout=10
         )
 
+    def _call_google_rest(self, api_key: str, model_name: str, prompt: str,
+                          image_path: Optional[str] = None) -> str:
+        """Helper for Google Gemini REST API."""
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+
+        headers = {
+            "Content-Type": "application/json",
+        }
+
+        # Build parts array
+        parts = []
+
+        # Add image if provided
+        if image_path:
+            b64_data, mime_type = MultimodalProcessor.encode_image_base64(image_path)
+            if b64_data:
+                parts.append({
+                    "inline_data": {
+                        "mime_type": mime_type,
+                        "data": b64_data
+                    }
+                })
+
+        # Add text prompt
+        parts.append({"text": prompt})
+
+        data = {
+            "contents": [{"parts": parts}],
+            "generationConfig": {
+                "temperature": 0.3,
+                "maxOutputTokens": 4096
+            }
+        }
+
+        # Google response parser
+        def parse_google_response(result: dict) -> str:
+            if 'candidates' in result and result['candidates']:
+                candidate = result['candidates'][0]
+                if 'content' in candidate and 'parts' in candidate['content']:
+                    return candidate['content']['parts'][0]['text'].strip()
+            raise Exception("Invalid response format from Google API")
+
+        return self._make_request_with_retry(
+            url=url,
+            data=data,
+            headers=headers,
+            response_parser=parse_google_response,
+            timeout=30
+        )
+
+    def _call_google_rest_multimodal(self, api_key: str, model_name: str, prompt: str,
+                                      image_paths: List[str]) -> str:
+        """Helper for Google Gemini REST API with multiple images."""
+        import os
+
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+
+        headers = {
+            "Content-Type": "application/json",
+        }
+
+        # Build parts array with all images first, then text
+        parts = []
+
+        for img_path in image_paths:
+            if os.path.exists(img_path):
+                b64_data, mime_type = MultimodalProcessor.encode_image_base64(img_path)
+                if b64_data:
+                    parts.append({
+                        "inline_data": {
+                            "mime_type": mime_type,
+                            "data": b64_data
+                        }
+                    })
+
+        # Add text prompt at the end
+        parts.append({"text": prompt})
+
+        data = {
+            "contents": [{"parts": parts}],
+            "generationConfig": {
+                "temperature": 0.3,
+                "maxOutputTokens": 4096
+            }
+        }
+
+        # Google response parser
+        def parse_google_response(result: dict) -> str:
+            if 'candidates' in result and result['candidates']:
+                candidate = result['candidates'][0]
+                if 'content' in candidate and 'parts' in candidate['content']:
+                    return candidate['content']['parts'][0]['text'].strip()
+            raise Exception("Invalid response format from Google API")
+
+        return self._make_request_with_retry(
+            url=url,
+            data=data,
+            headers=headers,
+            response_parser=parse_google_response,
+            timeout=60  # Longer timeout for multi-image
+        )
+
     def _generate_content(self, provider: str, api_key: str, model_name: str,
                            prompt: str, image_path: Optional[str] = None) -> str:
         """Route the request to the correct provider.
@@ -321,17 +423,9 @@ class AIAPIManager:
         Provider names use Title Case (e.g., 'Google', 'OpenAI', 'Groq').
         """
 
-        # --- Google (SDK) ---
+        # --- Google (REST API) ---
         if provider == 'Google':
-            genai.configure(api_key=api_key)
-            model = genai.GenerativeModel(model_name)
-            if image_path:
-                import PIL.Image
-                img = PIL.Image.open(image_path)
-                response = model.generate_content([prompt, img])
-            else:
-                response = model.generate_content(prompt)
-            return response.text.strip()
+            return self._call_google_rest(api_key, model_name, prompt, image_path)
 
         # --- Anthropic ---
         elif provider == 'Anthropic':
@@ -730,19 +824,9 @@ class AIAPIManager:
                 file_section += f"\n**{filename}:**\n{content}\n"
             full_prompt = prompt + file_section
 
-        # --- Google (SDK) - supports multiple images natively ---
+        # --- Google (REST API) - supports multiple images ---
         if provider == 'Google':
-            genai.configure(api_key=api_key)
-            model = genai.GenerativeModel(model_name)
-
-            content_parts = [full_prompt]
-            for img_path in image_paths:
-                if os.path.exists(img_path):
-                    img = PIL.Image.open(img_path)
-                    content_parts.append(img)
-
-            response = model.generate_content(content_parts)
-            return response.text.strip()
+            return self._call_google_rest_multimodal(api_key, model_name, full_prompt, image_paths)
 
         # --- Anthropic - supports multiple images ---
         elif provider == 'Anthropic':
