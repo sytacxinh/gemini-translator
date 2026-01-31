@@ -111,6 +111,15 @@ class TrayManager:
                 MenuItem(f'{display_hotkey} \u2192 {language}', lambda: None, enabled=False)
             )
 
+        # Add screenshot hotkey if vision capability is available
+        if self.config.has_any_vision_capable():
+            screenshot_hotkey = self.config.get_screenshot_hotkey()
+            if screenshot_hotkey:
+                display_hotkey = '+'.join(part.capitalize() for part in screenshot_hotkey.split('+'))
+                menu_items.append(
+                    MenuItem(f'{display_hotkey} \u2192 Screenshot Translate', lambda: None, enabled=False)
+                )
+
         menu_items.extend([
             MenuItem('\u2500' * 13, lambda: None, enabled=False),
             MenuItem('Send Feedback', lambda: webbrowser.open(FEEDBACK_URL)),

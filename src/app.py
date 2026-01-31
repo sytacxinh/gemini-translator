@@ -49,11 +49,17 @@ from src.ui.history_dialog import HistoryDialog
 from src.ui.toast import ToastManager, ToastType
 from src.ui.tooltip import TooltipManager
 from src.ui.tray import TrayManager
-from src.utils.updates import AutoUpdater
+from src.utils.updates import (
+    AutoUpdater,
+    STARTUP_UPDATE_DELAY,
+    UPDATE_TOAST_DURATION,
+    THREAD_NAMES
+)
 from src.core.file_processor import FileProcessor
 from src.ui.attachments import AttachmentArea
 from src.core.multimodal import MultimodalProcessor
 from src.core.nlp_manager import nlp_manager
+from src.core.screenshot import ScreenshotCapture
 
 
 def set_dark_title_bar(window):
@@ -180,6 +186,9 @@ class TranslatorApp:
         # Toast notification manager
         self.toast = ToastManager(self.root)
 
+        # Screenshot capture for vision/OCR translation
+        self.screenshot_capture = ScreenshotCapture(self.root)
+
         # Tooltip manager
         self.tooltip_manager = TooltipManager(self.root)
         self.tooltip_manager.configure_callbacks(
@@ -207,13 +216,215 @@ class TranslatorApp:
         self._translate_pulse_direction = 1  # 1 = brightening, -1 = dimming
         self._translate_pulse_level = 0
 
+        # Pending screenshot for "Open Translator" feature
+        self._pending_screenshot_path: str = None
+        self._screenshot_target_language: str = None
+
+        # Check for updates on startup if enabled
+        if self.config.get_auto_check_updates():
+            self._startup_update_check()
+
+    def _startup_update_check(self) -> None:
+        """Silent update check on startup (non-intrusive).
+
+        Checks for updates in background thread after app initialization.
+        Shows toast notification if update available.
+        """
+        def check_updates():
+            import time
+            time.sleep(STARTUP_UPDATE_DELAY)  # Wait for app to fully load
+
+            logging.info("Auto-checking for updates on startup...")
+            updater = AutoUpdater()
+            result = updater.check_update()
+
+            if result.get('has_update'):
+                new_version = result['version']
+                logging.info(f"Update available: {new_version}")
+                # Show non-intrusive toast notification
+                self.root.after(0, lambda: self._show_update_toast(new_version))
+            else:
+                logging.info("No update available on startup check")
+
+        threading.Thread(
+            target=check_updates,
+            daemon=True,
+            name=THREAD_NAMES['startup']
+        ).start()
+
+    def _show_update_toast(self, new_version: str) -> None:
+        """Show non-intrusive update notification as toast.
+
+        Args:
+            new_version: Version number of the available update (e.g., "1.9.7")
+        """
+        from src.ui.toast import show_toast
+        show_toast(
+            self.root,
+            "Update Available",
+            f"CrossTrans v{new_version} is available!\nOpen Settings to update.",
+            duration=UPDATE_TOAST_DURATION
+        )
+
     def _on_hotkey_translate(self, language: str):
-        """Handle hotkey translation request."""
+        """Handle hotkey translation request.
+
+        Args:
+            language: Target language name, or "__screenshot__" for screenshot OCR
+        """
+        # Check for special screenshot hotkey
+        if language == "__screenshot__":
+            self.root.after(0, self._on_screenshot_hotkey)
+            return
+
+        # Normal language translation
         # Capture mouse position immediately when hotkey is pressed
         self.tooltip_manager.capture_mouse_position()
 
         self.root.after(0, lambda: self.tooltip_manager.show_loading(language))
         self.translation_service.do_translation(language)
+
+    def _on_screenshot_hotkey(self):
+        """Handle screenshot hotkey press (Win+Alt+S).
+
+        Checks if vision capability is available:
+        - If NO vision API → Shows notification with guidance + clickable link to Settings
+        - If vision API available → Opens screenshot crop overlay
+        """
+        # Check if any API has vision capability
+        has_vision = self.config.has_any_vision_capable()
+
+        if not has_vision:
+            # Show notification explaining the situation with action link
+            self._show_vision_not_available_notification()
+            return
+
+        # Get screenshot target language from settings
+        screenshot_lang = self.config.get_screenshot_target_language()
+        if screenshot_lang == "Auto":
+            screenshot_lang = self.selected_language
+
+        # Store for later use in _on_screenshot_captured
+        self._screenshot_target_language = screenshot_lang
+
+        # Vision available - proceed with screenshot capture
+        logging.info(f"Starting screenshot capture for {screenshot_lang} translation")
+        self.screenshot_capture.capture_region(self._on_screenshot_captured)
+
+    def _show_vision_not_available_notification(self):
+        """Show toast notification when vision capability is not available.
+
+        Includes clickable link to open Settings → API Key tab.
+        """
+        # Check if user has any API keys at all
+        api_keys = self.config.get_api_keys()
+        has_any_keys = any(k.get('api_key', '').strip() for k in api_keys)
+
+        # Callback to open Settings → API Key tab
+        def open_api_key_settings():
+            self._show_settings_tab("API Key")
+
+        if not has_any_keys:
+            # No API keys at all - using Trial Mode
+            self.toast.show_warning_with_action(
+                "Screenshot translation requires an API key.\n"
+                "Trial Mode does not support image processing.\n"
+                "Add a vision-capable API key (GPT-4o, Gemini Pro Vision, Claude 3, etc.)",
+                "Open API Key Settings",
+                open_api_key_settings
+            )
+        else:
+            # Has API keys but none support vision
+            self.toast.show_warning_with_action(
+                "No vision-capable API key found.\n"
+                "Your current API keys don't support image processing.\n"
+                "Add a vision model: GPT-4o, Gemini Pro Vision, Claude 3 Sonnet, etc.",
+                "Open API Key Settings",
+                open_api_key_settings
+            )
+
+        logging.info("Screenshot hotkey pressed but no vision capability available")
+
+    def _on_screenshot_captured(self, image_path: str):
+        """Handle captured screenshot image.
+
+        Args:
+            image_path: Path to captured screenshot PNG file, or None if cancelled
+        """
+        if not image_path:
+            logging.info("Screenshot capture cancelled by user")
+            return
+
+        logging.info(f"Screenshot captured: {image_path}")
+
+        # Save image path for "Open Translator" feature (DON'T delete immediately)
+        self._pending_screenshot_path = image_path
+
+        # Get target language (saved in _on_screenshot_hotkey)
+        target_lang = self._screenshot_target_language or self.selected_language
+
+        # Show loading indicator
+        self.tooltip_manager.capture_mouse_position()
+        self.tooltip_manager.show_loading(f"Screenshot → {target_lang}")
+
+        # Process in background thread
+        def process_screenshot():
+            try:
+                # Use multimodal translation with the captured image
+                prompt = f"""Extract and translate ALL visible text from this image to {target_lang}.
+
+Instructions:
+1. Perform OCR - extract ALL text exactly as it appears
+2. Translate the extracted text
+3. Return format:
+===ORIGINAL===
+[All extracted text]
+
+===TRANSLATION===
+[Translated text in {target_lang}]"""
+
+                result = self.translation_service.api_manager.translate_multimodal(
+                    prompt, [image_path], {}
+                )
+
+                # Parse result
+                if "===ORIGINAL===" in result and "===TRANSLATION===" in result:
+                    parts = result.split("===TRANSLATION===")
+                    original = parts[0].replace("===ORIGINAL===", "").strip()
+                    translated = parts[1].strip() if len(parts) > 1 else ""
+                else:
+                    original = "[Screenshot]"
+                    translated = result
+
+                # Get trial info
+                trial_info = self.translation_service.get_trial_info()
+
+                # Show result in tooltip (image path preserved for "Open Translator")
+                self.root.after(0, lambda: self.show_tooltip(original, translated, target_lang, trial_info))
+
+                # Save to history
+                self.translation_service.history_manager.add_entry(
+                    "[Screenshot OCR]", translated, target_lang, source_type="screenshot"
+                )
+
+            except Exception as e:
+                logging.error(f"Screenshot translation failed: {e}")
+                self.root.after(0, lambda: self.toast.show_error(f"Screenshot translation failed: {str(e)}"))
+                # Cleanup on error
+                self._cleanup_pending_screenshot()
+
+        import threading
+        threading.Thread(target=process_screenshot, daemon=True).start()
+
+    def _cleanup_pending_screenshot(self):
+        """Clean up pending screenshot file if exists."""
+        if self._pending_screenshot_path:
+            try:
+                if os.path.exists(self._pending_screenshot_path):
+                    os.unlink(self._pending_screenshot_path)
+            except Exception:
+                pass
+            self._pending_screenshot_path = None
 
     def show_tooltip(self, original: str, translated: str, target_lang: str, trial_info: dict = None):
         """Show compact tooltip near mouse cursor with translation result.
@@ -250,7 +461,19 @@ class TranslatorApp:
     def _on_tooltip_open_translator(self):
         """Handle open translator from tooltip."""
         self.close_tooltip()
-        self.show_popup(self.current_original, self.current_translated, self.current_target_lang)
+
+        # Check if there's a pending screenshot to load into attachments
+        pending_image = self._pending_screenshot_path
+
+        self.show_popup(
+            self.current_original,
+            self.current_translated,
+            self.current_target_lang,
+            pending_attachment=pending_image
+        )
+
+        # Clear pending screenshot (will be managed by AttachmentArea now)
+        self._pending_screenshot_path = None
 
     def _on_tooltip_dictionary_lookup(self, words: list, target_lang: str):
         """Handle dictionary lookup from tooltip.
@@ -272,7 +495,7 @@ class TranslatorApp:
         def do_lookup():
             try:
                 # Single API call for all words (optimized batch lookup)
-                result = self.translation_service.dictionary_lookup_batch(filtered_words, target_lang)
+                result = self.translation_service.dictionary_lookup(filtered_words, target_lang)
                 # Get trial info after API call (quota may have changed)
                 trial_info = self.translation_service.get_trial_info()
                 # Show result in a new tooltip at mouse position (pass words for highlighting)
@@ -326,7 +549,8 @@ class TranslatorApp:
             # Reset after a short delay
             self.root.after(500, lambda: setattr(self, '_showing_popup', False))
 
-    def show_popup(self, original: str, translated: str, target_lang: str, force_new: bool = False):
+    def show_popup(self, original: str, translated: str, target_lang: str,
+                   force_new: bool = False, pending_attachment: str = None):
         """Show the full translator popup window.
 
         Args:
@@ -334,6 +558,7 @@ class TranslatorApp:
             translated: Translated text to display
             target_lang: Target language
             force_new: If False and popup exists with content, just bring to front
+            pending_attachment: Optional file path to add to attachments (e.g., screenshot)
         """
         # If popup exists with content and we're not forcing new, just bring it to front
         if not force_new and self.popup:
@@ -493,6 +718,31 @@ class TranslatorApp:
                 self.popup.update_idletasks()
                 self.attachment_area = AttachmentArea(content_frame, self.config, on_change=None)
                 self.attachment_area.pack(fill=X, pady=(0, 10))
+
+                # Load pending attachment (e.g., from screenshot hotkey)
+                if pending_attachment and os.path.exists(pending_attachment):
+                    try:
+                        import shutil
+                        import tempfile
+                        import time
+
+                        # Create persistent copy in temp directory
+                        temp_dir = tempfile.gettempdir()
+                        filename = f"screenshot_{int(time.time())}.png"
+                        persistent_path = os.path.join(temp_dir, filename)
+                        shutil.copy2(pending_attachment, persistent_path)
+
+                        # Add to attachments
+                        self.attachment_area.add_file(persistent_path, show_warning=False)
+                        logging.info(f"Loaded screenshot into attachments: {persistent_path}")
+
+                        # Delete original temp file
+                        try:
+                            os.unlink(pending_attachment)
+                        except Exception:
+                            pass
+                    except Exception as e:
+                        logging.error(f"Failed to load screenshot into attachments: {e}")
 
             except Exception as e:
                 logging.error(f"Error initializing AttachmentArea: {e}")
@@ -1457,6 +1707,9 @@ IMPORTANT: Translate ALL text to {self.selected_language}. Process ALL files. Ex
         dict_frame.set_exit_callback(dict_popup.destroy)
         dict_frame.pack(fill=BOTH, expand=True)
 
+        # Store reference for animation control (so stop_dictionary_animation() works)
+        self.tooltip_manager._dict_popup_frame = dict_frame
+
         # Close on Escape
         dict_popup.bind('<Escape>', lambda e: dict_popup.destroy())
         dict_popup.focus_force()
@@ -1480,7 +1733,7 @@ IMPORTANT: Translate ALL text to {self.selected_language}. Process ALL files. Ex
         def do_lookup():
             try:
                 # Single API call for all words (optimized batch lookup)
-                result = self.translation_service.dictionary_lookup_batch(words, target_lang)
+                result = self.translation_service.dictionary_lookup(words, target_lang)
                 # Get trial info after API call (quota may have changed)
                 trial_info = self.translation_service.get_trial_info()
                 # Show result in tooltip (pass words for highlighting)
@@ -1588,6 +1841,8 @@ IMPORTANT: Translate ALL text to {self.selected_language}. Process ALL files. Ex
             self.translation_service.reconfigure()
             # Refresh attachment area in case API capabilities changed
             self._refresh_attachment_area()
+            # Refresh tray menu to show/hide screenshot hotkey based on vision capability
+            self._refresh_tray_menu()
 
         self.settings_window = SettingsWindow(self.root, self.config, on_settings_save, on_api_change)
 
@@ -1735,38 +1990,6 @@ IMPORTANT: Translate ALL text to {self.selected_language}. Process ALL files. Ex
         except Exception as e:
             logging.error(f"Watchdog error: {e}")
 
-    def _check_updates_async(self):
-        """Check for updates asynchronously."""
-        if not self.config.get_check_updates():
-            return
-
-        updater = AutoUpdater()
-        result = updater.check_update()
-        if result.get('has_update'):
-            self.root.after(0, lambda: self._show_update_notification(result['version']))
-
-    def _show_update_notification(self, new_version: str):
-        """Show update notification."""
-        if HAS_TTKBOOTSTRAP:
-            result = Messagebox.yesno(
-                f"New version v{new_version} available!\n\n"
-                f"Current: v{VERSION}\n\n"
-                "Open Settings to update?",
-                title="Update Available",
-                parent=self.root
-            )
-            if result == "Yes":
-                self._show_settings_tab("General")
-        else:
-            from tkinter import messagebox
-            result = messagebox.askyesno(
-                "Update Available",
-                f"New version v{new_version} available!\n\n"
-                f"Current: v{VERSION}\n\n"
-                "Open Settings to update?"
-            )
-            if result:
-                self._show_settings_tab("General")
 
     def _show_settings_tab(self, tab_name: str):
         """Open settings window and navigate to a specific tab.
@@ -1882,9 +2105,8 @@ IMPORTANT: Translate ALL text to {self.selected_language}. Process ALL files. Ex
         tray_thread = threading.Thread(target=run_tray_safe, daemon=True)
         tray_thread.start()
 
-        # Check for updates
-        threading.Thread(target=self._check_updates_async, daemon=True).start()
-        
+        # Note: Update check is already triggered in __init__ via _startup_update_check()
+
         # Run one-time startup API check (temporarily disabled)
         # threading.Thread(target=self._startup_api_check, daemon=True).start()
 

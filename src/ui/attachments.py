@@ -330,6 +330,10 @@ class AttachmentArea(ttk.Frame):
         content_frame = tk.Frame(frame, bg='#3a3a3a')
         content_frame.pack(fill=tk.BOTH, expand=True, padx=3, pady=3)
 
+        # Double-click to open file with system default application
+        frame.bind("<Double-Button-1>", lambda e, p=file_path: self._open_file(p))
+        content_frame.bind("<Double-Button-1>", lambda e, p=file_path: self._open_file(p))
+
         if is_image:
             try:
                 img = Image.open(file_path)
@@ -338,10 +342,13 @@ class AttachmentArea(ttk.Frame):
                 self.thumbnails.append(photo)
                 img_label = tk.Label(content_frame, image=photo, bg='#3a3a3a')
                 img_label.pack(pady=(2, 0))
+                img_label.bind("<Double-Button-1>", lambda e, p=file_path: self._open_file(p))
             except:
                 # Fallback for broken images
-                tk.Label(content_frame, text="🖼", font=('Segoe UI', 20),
-                         bg='#3a3a3a', fg='#888888').pack(pady=(5, 0))
+                fallback_label = tk.Label(content_frame, text="🖼", font=('Segoe UI', 20),
+                         bg='#3a3a3a', fg='#888888')
+                fallback_label.pack(pady=(5, 0))
+                fallback_label.bind("<Double-Button-1>", lambda e, p=file_path: self._open_file(p))
         else:
             # File type icon with color coding
             ext = os.path.splitext(file_path)[1].lower()
@@ -361,14 +368,17 @@ class AttachmentArea(ttk.Frame):
                 '.srt': '🎬',
             }.get(ext, '📁')
 
-            tk.Label(content_frame, text=icon_text, font=('Segoe UI', 18),
-                     bg='#3a3a3a', fg=icon_color).pack(pady=(3, 0))
+            icon_label = tk.Label(content_frame, text=icon_text, font=('Segoe UI', 18),
+                     bg='#3a3a3a', fg=icon_color)
+            icon_label.pack(pady=(3, 0))
+            icon_label.bind("<Double-Button-1>", lambda e, p=file_path: self._open_file(p))
 
             # Extension badge
             ext_label = tk.Label(content_frame, text=ext.upper(),
                                  font=('Segoe UI', 7, 'bold'),
                                  bg=icon_color, fg='white', padx=3)
             ext_label.pack(pady=(2, 0))
+            ext_label.bind("<Double-Button-1>", lambda e, p=file_path: self._open_file(p))
 
         # Filename (truncated with tooltip)
         display_name = filename
@@ -379,9 +389,10 @@ class AttachmentArea(ttk.Frame):
                               bg='#3a3a3a', fg='#cccccc')
         name_label.pack(side=tk.BOTTOM, pady=(0, 2))
 
-        # Tooltip for full filename
-        self._create_tooltip(name_label, filename)
-        self._create_tooltip(frame, filename)
+        # Tooltip for full filename with double-click hint
+        tooltip_text = f"{filename}\n(Double-click to preview)"
+        self._create_tooltip(name_label, tooltip_text)
+        self._create_tooltip(frame, tooltip_text)
 
         # Remove button (top-right corner)
         x_btn = tk.Label(frame, text="×", font=('Segoe UI', 10, 'bold'),
@@ -426,6 +437,29 @@ class AttachmentArea(ttk.Frame):
 
         widget.bind("<Enter>", show_tooltip)
         widget.bind("<Leave>", hide_tooltip)
+
+    def _open_file(self, file_path):
+        """Open file with system's default application."""
+        if not os.path.exists(file_path):
+            from tkinter import messagebox
+            messagebox.showwarning(
+                "File Not Found",
+                f"The file no longer exists:\n{os.path.basename(file_path)}",
+                parent=self
+            )
+            return
+
+        try:
+            os.startfile(file_path)
+            logging.debug(f"Opened file: {file_path}")
+        except Exception as e:
+            logging.error(f"Failed to open file {file_path}: {e}")
+            from tkinter import messagebox
+            messagebox.showerror(
+                "Cannot Open File",
+                f"Failed to open:\n{os.path.basename(file_path)}\n\nError: {e}",
+                parent=self
+            )
 
     def _remove_item(self, path, widget):
         """Remove an attachment."""

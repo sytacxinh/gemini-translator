@@ -203,6 +203,100 @@ class ToastManager:
         except (tk.TclError, ValueError):
             pass  # Toast was destroyed or invalid geometry
 
+    def show_warning_with_action(self,
+                                 message: str,
+                                 action_text: str,
+                                 action_callback: Callable,
+                                 duration: Optional[int] = 6000) -> tk.Toplevel:
+        """Show warning toast with a clickable action link.
+
+        Args:
+            message: Main warning message
+            action_text: Text for the clickable action link (e.g., "Open API Key Settings")
+            action_callback: Function to call when action is clicked
+            duration: Display duration in ms (default 6000 - longer for user to read and click)
+
+        Returns:
+            The toast Toplevel window
+
+        Example:
+            toast.show_warning_with_action(
+                "No vision-capable API found.",
+                "Open API Key Settings",
+                lambda: app.show_settings_api_tab()
+            )
+        """
+        # Remove oldest toast if at max
+        if len(self.active_toasts) >= self.MAX_TOASTS:
+            oldest = self.active_toasts[0]
+            self._dismiss(oldest, animate=False)
+
+        config = self.CONFIGS[ToastType.WARNING]
+
+        # Create toast window
+        toast = tk.Toplevel(self.root)
+        toast.overrideredirect(True)
+        toast.attributes('-topmost', True)
+        toast.attributes('-alpha', 0.0)
+        toast.configure(bg=config.bg)
+
+        # Content frame with more padding for action link
+        frame = tk.Frame(toast, bg=config.bg, padx=20, pady=12)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        # Icon + Message
+        text = f"{config.icon}  {message}"
+        label = tk.Label(
+            frame,
+            text=text,
+            bg=config.bg,
+            fg=config.fg,
+            font=('Segoe UI', 11),
+            wraplength=320,
+            justify=tk.LEFT
+        )
+        label.pack(anchor='w')
+
+        # Action link (clickable, underlined, blue color for visibility on yellow bg)
+        action_label = tk.Label(
+            frame,
+            text=f"→ {action_text}",
+            bg=config.bg,
+            fg='#0056b3',  # Dark blue - visible on yellow warning bg
+            font=('Segoe UI', 10, 'underline'),
+            cursor='hand2'
+        )
+        action_label.pack(anchor='w', pady=(8, 0))
+
+        # Bind action click - dismiss toast and trigger callback
+        def on_action_click(e):
+            self._dismiss(toast, animate=False)
+            action_callback()
+
+        action_label.bind('<Button-1>', on_action_click)
+
+        # Hover effect for action link
+        def on_enter(e):
+            action_label.configure(fg='#007bff')  # Brighter blue on hover
+
+        def on_leave(e):
+            action_label.configure(fg='#0056b3')
+
+        action_label.bind('<Enter>', on_enter)
+        action_label.bind('<Leave>', on_leave)
+
+        # Click main area to dismiss (but not action link)
+        for widget in (toast, frame, label):
+            widget.bind('<Button-1>', lambda e, t=toast: self._dismiss(t))
+
+        # Position and show
+        toast.update_idletasks()
+        self._position_toast(toast)
+        self.active_toasts.append(toast)
+        self._fade_in(toast, callback=lambda: self._schedule_dismiss(toast, duration))
+
+        return toast
+
     def dismiss_all(self) -> None:
         """Dismiss all active toasts immediately."""
         for toast in self.active_toasts[:]:  # Copy list to avoid modification during iteration

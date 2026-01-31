@@ -100,10 +100,39 @@ class TranslationService:
         self._configure_api()
 
     def _is_dictionary_query(self, text: str) -> bool:
-        """Check if text looks like a dictionary lookup (single word/short phrase)."""
-        words = text.strip().split()
-        # 1-3 words, no sentence punctuation
-        return 1 <= len(words) <= 4 and not any(c in text for c in '.!?;:')
+        """Check if text looks like a dictionary lookup (single word/short phrase).
+
+        Uses language-aware tokenization for CJK languages (Japanese, Chinese, Korean, etc.)
+        which don't use spaces between words.
+        """
+        # Check for sentence punctuation first (quick exit)
+        # Include both Western and CJK punctuation
+        if any(c in text for c in '.!?;:。！？；：'):
+            return False
+
+        text = text.strip()
+        if not text:
+            return False
+
+        # Try language-aware tokenization for CJK languages
+        try:
+            from src.core.nlp_manager import nlp_manager
+
+            # Detect language
+            detected_lang, confidence = nlp_manager.detect_language(text)
+
+            # Use NLP tokenization if available and confident
+            if confidence >= 0.6 and nlp_manager.is_installed(detected_lang):
+                tokens = nlp_manager.tokenize(text, detected_lang)
+                # Filter out empty tokens and punctuation-only tokens
+                tokens = [t for t in tokens if t.strip() and not all(c in '。、！？；：,.!?;:()（）「」『』【】' for c in t)]
+                return 1 <= len(tokens) <= 4
+        except Exception:
+            pass  # Fallback to simple split
+
+        # Fallback: simple whitespace split (for languages with spaces)
+        words = text.split()
+        return 1 <= len(words) <= 4
 
     def _strip_thinking_tags(self, text: str) -> str:
         """Remove AI thinking/reasoning tags from response.
@@ -138,18 +167,9 @@ If the text is already in {target_language}, still provide a natural rephrasing.
 
 Additional instructions from user: {custom_prompt}"""
         elif self._is_dictionary_query(text):
-            # Dictionary Mode
-            base_prompt = f"""You are a dictionary. For the input text, provide:
-
-1. **Translation to {target_language}**: [translation]
-2. **Definition**: [meaning in {target_language}]
-3. **Word Type**: [noun/verb/adjective/adverb/etc.]
-4. **Pronunciation**: [IPA if available]
-5. **Example Sentences**:
-   - [Example 1] -> [Translation]
-   - [Example 2] -> [Translation]
-
-Format with markdown. Keep explanations concise."""
+            # Dictionary Mode - auto-detected for 1-4 words
+            # Delegate to dictionary_lookup() to avoid prompt duplication
+            return self.dictionary_lookup(text, target_language)
         else:
             # No custom prompt (quick hotkey translation) → enforce target language
             base_prompt = f"""Translate the following text to {target_language}.
@@ -183,103 +203,60 @@ IMPORTANT: Your response MUST be in {target_language} only.
                 return "Error: Invalid API key. Please check your API key in Settings."
             return f"Error: {error_msg}"
 
-    def dictionary_lookup(self, text: str, target_language: str) -> str:
-        """Perform explicit dictionary lookup (always uses dictionary prompt).
+    def dictionary_lookup(self, text, target_language: str) -> str:
+        """Perform dictionary lookup for one or more words.
 
-        Unlike translate_text which auto-detects dictionary mode for 1-4 words,
-        this method always uses dictionary format regardless of text length.
+        Accepts either a single word/phrase (str) or a list of words.
+        For multiple words, makes a single optimized API call.
 
         Args:
-            text: Word(s) or phrase to look up
+            text: Word/phrase (str) or list of words to look up
             target_language: Target language for definitions/translations
 
         Returns:
             Dictionary-formatted response with translation, definition, etc.
         """
-        prompt = f"""You are a dictionary. For the input text, provide:
+        # Normalize input: convert string to single-item list
+        if isinstance(text, str):
+            words = [text]
+        else:
+            words = list(text)
 
-1. **Translation to {target_language}**: [translation]
-2. **Definition**: [meaning in {target_language}]
-3. **Word Type**: [noun/verb/adjective/adverb/etc.]
-4. **Pronunciation**: [IPA if available]
-5. **Example Sentences**:
-   - [Example 1] -> [Translation]
-   - [Example 2] -> [Translation]
-
-Format with markdown. Keep explanations concise.
-
-Text to look up:
-{text}"""
-
-        try:
-            # Use trial mode if active
-            if self._is_trial_mode and self.trial_client:
-                result = self._translate_trial(prompt)
-            else:
-                result = self.api_manager.translate(prompt)
-
-            # Clean up AI thinking tags from result
-            result = self._strip_thinking_tags(result)
-            return result
-        except TrialAPIError as e:
-            return f"Error: {str(e)}"
-        except Exception as e:
-            error_msg = str(e)
-            if "API_KEY_INVALID" in error_msg or "API key not valid" in error_msg:
-                return "Error: Invalid API key. Please check your API key in Settings."
-            return f"Error: {error_msg}"
-
-    def dictionary_lookup_batch(self, words: list, target_language: str) -> str:
-        """Perform dictionary lookup for multiple words in a single API call.
-
-        Optimized batch lookup that retrieves dictionary entries for all words
-        at once, reducing API calls from N to 1.
-
-        Args:
-            words: List of words to look up
-            target_language: Target language for definitions/translations
-
-        Returns:
-            Combined dictionary entries for all words, formatted with markdown
-        """
         if not words:
             return ""
 
-        # Single word: use regular lookup
-        if len(words) == 1:
-            return self.dictionary_lookup(words[0], target_language)
-
-        # Build numbered word list for clarity
+        # Build numbered word list (same format for 1 or many words)
         word_list = "\n".join(f"{i+1}. {word}" for i, word in enumerate(words))
 
-        prompt = f"""You are a comprehensive dictionary. Provide dictionary entries for EACH of the following words.
+        # Unified prompt for all cases
+        prompt = f"""You are a professional dictionary. Provide dictionary entries.
 
 **Target Language**: {target_language}
 
 **Words to look up**:
 {word_list}
 
-**For EACH word, provide this EXACT format**:
+**OUTPUT FORMAT** (MUST follow for EACH word):
 
 ## [Word]
 
-1. **Translation**: [translation to {target_language}]
-2. **Definition**: [meaning in {target_language}]
-3. **Word Type**: [noun/verb/adjective/adverb/preposition/etc.]
-4. **Pronunciation**: [IPA notation if available]
-5. **Examples**:
-   - [Original sentence] → [Translation]
-   - [Original sentence] → [Translation]
+1. **Source Language**: detected language
+2. **Translation**: actual {target_language} translation (REQUIRED)
+3. **Definition**: explanation in {target_language} (REQUIRED)
+4. **Word Type**: noun/verb/adjective/adverb/etc.
+5. **Pronunciation**: /IPA/
+6. **Examples**:
+   - Source language sentence → {target_language} translation
+   - Source language sentence → {target_language} translation
 
 ---
 
-**IMPORTANT RULES**:
-- Provide a SEPARATE entry for EACH word listed above
-- Use the exact markdown format shown (## header, numbered list)
-- Use "---" as separator between word entries
-- Keep explanations concise but complete
-- All definitions and examples must be in {target_language}
-- Do NOT skip any words - provide entry for ALL {len(words)} words"""
+**CRITICAL**:
+- ALWAYS start each entry with ## [Word] header (for highlighting)
+- FILL IN all fields - never leave blank after colon
+- Examples must be in source language (same as input word)
+- All translations must be in {target_language}
+- Provide entry for ALL {len(words)} word(s)"""
 
         try:
             # Use trial mode if active

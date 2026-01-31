@@ -98,9 +98,10 @@ class HotkeyManager(threading.Thread):
         return modifiers, vk_code
 
     def register_hotkeys(self):
-        """Register all configured hotkeys. Must be called from hotkey thread."""
+        """Register all configured hotkeys including screenshot. Must be called from hotkey thread."""
         self._unregister_all_internal()
 
+        # Register language hotkeys
         hotkeys = self.config.get_hotkeys()
         custom_hotkeys = self.config.get_custom_hotkeys()
         all_hotkeys = {**hotkeys, **custom_hotkeys}
@@ -130,6 +131,23 @@ class HotkeyManager(threading.Thread):
                     logging.error(f"Failed to register hotkey '{combo}': error {error_code}")
 
             hotkey_id += 1
+
+        # Register screenshot hotkey (special - uses "__screenshot__" marker)
+        screenshot_combo = self.config.get_screenshot_hotkey()
+        if screenshot_combo:
+            modifiers, vk_code = self._parse_hotkey(screenshot_combo)
+            if modifiers is not None and vk_code is not None:
+                result = self.user32.RegisterHotKey(None, hotkey_id, modifiers, vk_code)
+                if result:
+                    self._registered_ids.append(hotkey_id)
+                    self._hotkey_map[hotkey_id] = "__screenshot__"  # Special marker
+                    logging.info(f"Registered screenshot hotkey: {screenshot_combo} (ID: {hotkey_id})")
+                else:
+                    error_code = self.kernel32.GetLastError()
+                    if error_code == 1409:
+                        logging.warning(f"Screenshot hotkey '{screenshot_combo}' already registered by another app")
+                    else:
+                        logging.warning(f"Failed to register screenshot hotkey: error {error_code}")
 
     def _unregister_all_internal(self):
         """Unregister all hotkeys (internal use)."""

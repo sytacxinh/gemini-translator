@@ -1,4 +1,4 @@
-CrossTrans v1.9.6 - Project Structure
+CrossTrans v1.9.7 - Project Structure
 ========================================
 
 gemini_translator_v4/
@@ -20,6 +20,7 @@ gemini_translator_v4/
     │   ├── multimodal.py    # Vision processing (OCR)
     │   ├── file_processor.py # Document text extraction
     │   ├── pdf_ocr.py       # Scanned PDF OCR support
+    │   ├── screenshot.py    # Screenshot capture for OCR
     │   ├── crypto.py        # Secure API key storage (DPAPI)
     │   ├── ssl_pinning.py   # SSL certificate pinning
     │   ├── auth.py          # Windows Hello authentication
@@ -32,7 +33,7 @@ gemini_translator_v4/
     ├── ui/
     │   ├── settings.py      # SettingsWindow (with Show All API Keys)
     │   ├── dialogs.py       # APIErrorDialog, TrialExhaustedDialog, TrialFeatureDialog
-    │   ├── attachments.py   # File attachment widget
+    │   ├── attachments.py   # File attachment widget (double-click preview)
     │   ├── dictionary_mode.py # Dictionary word selection UI
     │   ├── history_dialog.py # History viewer (with search)
     │   ├── progress_dialog.py # Progress indicator
@@ -70,6 +71,7 @@ History management             src/core/history.py
 Vision/OCR processing          src/core/multimodal.py
 File text extraction           src/core/file_processor.py
 Scanned PDF OCR                src/core/pdf_ocr.py
+Screenshot capture             src/core/screenshot.py
 API key encryption             src/core/crypto.py
 SSL pinning                    src/core/ssl_pinning.py
 Windows Hello auth             src/core/auth.py
@@ -90,7 +92,34 @@ Main app (tray, tooltip, popup) src/app.py
 Update checker                 src/utils/updates.py
 
 ========================================
-New Features in v1.9.6
+New Features in v1.9.7
+========================================
+
+1. Screenshot Translation (Win+Alt+S)
+   - Capture any screen region for OCR translation
+   - Multi-monitor support with virtual screen coordinates
+   - Semi-transparent overlay with drag selection
+   - Configurable target language in Settings > Hotkeys
+   - "Open Translator" loads screenshot into Attachments
+   - Vision capability check before capture
+
+2. Double-click to Preview Attachments
+   - Double-click any attachment to open with system default app
+   - Tooltip shows "(Double-click to preview)" hint
+   - Error handling for deleted files
+
+3. Auto-check Updates on Startup
+   - Non-intrusive toast notification
+   - Background check after 3 seconds delay
+   - Clickable link to download page
+
+4. UI Improvements
+   - Screenshot Translate section in Settings > Hotkeys tab
+   - Target language dropdown for screenshot OCR
+   - Vision status indicator in system tray menu
+
+========================================
+Previous Features (v1.9.6)
 ========================================
 
 1. Critical Bug Fix

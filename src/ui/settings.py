@@ -23,7 +23,15 @@ except ImportError:
 
 from src.constants import VERSION, GITHUB_REPO, LANGUAGES, PROVIDERS_LIST, FEEDBACK_URL, MODEL_PROVIDER_MAP, API_KEY_PATTERNS
 from src.core.api_manager import AIAPIManager
-from src.utils.updates import AutoUpdater
+from src.utils.updates import (
+    AutoUpdater,
+    DownloadCancelledException,
+    classify_error_type,
+    UPDATE_THREAD_TIMEOUT,
+    RELEASE_NOTES_MAX_LENGTH,
+    PROGRESS_WINDOW_SIZE,
+    THREAD_NAMES
+)
 from src.core.multimodal import MultimodalProcessor
 from src.core.auth import require_auth
 
@@ -323,7 +331,8 @@ class SettingsWindow:
         self.vision_chk.configure(state='disabled')  # Display only
         status_text = "Available" if has_vision else "No capable API found"
         status_color = '#28a745' if has_vision else '#888888'
-        ttk.Label(vision_frame, text=f"({status_text})", font=('Segoe UI', 8), foreground=status_color).pack(side=LEFT, padx=(5, 0))
+        self.vision_status_label = ttk.Label(vision_frame, text=f"({status_text})", font=('Segoe UI', 8), foreground=status_color)
+        self.vision_status_label.pack(side=LEFT, padx=(5, 0))
 
         # File processing capability
         file_frame = ttk.Frame(api_container)
@@ -343,7 +352,8 @@ class SettingsWindow:
         self.file_chk.configure(state='disabled')  # Display only
         file_status = "Available" if has_file else "No capable API found"
         file_color = '#28a745' if has_file else '#888888'
-        ttk.Label(file_frame, text=f"({file_status})", font=('Segoe UI', 8), foreground=file_color).pack(side=LEFT, padx=(5, 0))
+        self.file_status_label = ttk.Label(file_frame, text=f"({file_status})", font=('Segoe UI', 8), foreground=file_color)
+        self.file_status_label.pack(side=LEFT, padx=(5, 0))
 
         ttk.Label(api_container, text="💡 Tip: Click 'Test' on an API to detect its capabilities.",
                   font=('Segoe UI', 8), foreground='#888888').pack(anchor=W, pady=(5, 0))
@@ -922,6 +932,11 @@ class SettingsWindow:
             if hasattr(self, 'vision_chk'):
                 # Toggle is display-only, always disabled
                 self.vision_chk.configure(state='disabled')
+            # Update status label text and color
+            if hasattr(self, 'vision_status_label'):
+                status_text = "Available" if has_vision else "No capable API found"
+                status_color = '#28a745' if has_vision else '#888888'
+                self.vision_status_label.configure(text=f"({status_text})", foreground=status_color)
         except Exception as e:
             logging.warning(f"Failed to refresh vision toggle: {e}")
 
@@ -934,6 +949,11 @@ class SettingsWindow:
             if hasattr(self, 'file_chk'):
                 # Toggle is display-only, always disabled
                 self.file_chk.configure(state='disabled')
+            # Update status label text and color
+            if hasattr(self, 'file_status_label'):
+                status_text = "Available" if has_file else "No capable API found"
+                status_color = '#28a745' if has_file else '#888888'
+                self.file_status_label.configure(text=f"({status_text})", foreground=status_color)
         except Exception as e:
             logging.warning(f"Failed to refresh file toggle: {e}")
 
@@ -1025,6 +1045,12 @@ class SettingsWindow:
         self.config.set_check_updates(self.updates_var.get())
         logging.info(f"Auto-saved check_updates: {self.updates_var.get()}")
 
+    def _on_auto_check_changed(self):
+        """Handle auto-check setting change - auto-save immediately."""
+        enabled = self.auto_check_var.get()
+        self.config.set_auto_check_updates(enabled)
+        logging.info(f"Auto-check updates on startup: {enabled}")
+
     def _create_hotkey_tab(self, parent):
         """Create hotkey settings tab."""
         # Clear previous entries
@@ -1098,9 +1124,79 @@ class SettingsWindow:
 
         self._update_add_button_state()
 
+        # 3. Screenshot Translate section
+        ttk.Separator(hotkey_container).pack(fill=X, pady=20)
+        ttk.Label(hotkey_container, text="Screenshot Translate", font=('Segoe UI', 10, 'bold')).pack(anchor=W, pady=(0, 10))
+
+        self._create_screenshot_hotkey_section(hotkey_container)
+
         # Update scroll
         hotkey_container.update_idletasks()
         canvas.config(scrollregion=canvas.bbox("all"))
+
+    def _create_screenshot_hotkey_section(self, parent):
+        """Create the screenshot hotkey configuration section."""
+        # Hotkey row
+        row = ttk.Frame(parent)
+        row.pack(fill=X, pady=5, padx=5)
+
+        ttk.Label(row, text="Screenshot OCR:", width=22, anchor=W).pack(side=LEFT)
+
+        self.screenshot_hotkey_var = tk.StringVar(value=self.config.get_screenshot_hotkey())
+        screenshot_entry = ttk.Entry(row, textvariable=self.screenshot_hotkey_var, width=22, state='readonly')
+        screenshot_entry.pack(side=LEFT, padx=5)
+        self._screenshot_entry = screenshot_entry  # Save reference for recording
+
+        if HAS_TTKBOOTSTRAP:
+            ttk.Button(row, text="Edit",
+                       command=lambda: self._start_record(screenshot_entry, self.screenshot_hotkey_var, "__screenshot__"),
+                       bootstyle="info-outline", width=8).pack(side=LEFT, padx=2)
+            ttk.Button(row, text="Restore",
+                       command=self._restore_screenshot_hotkey,
+                       bootstyle="secondary-outline", width=8).pack(side=LEFT, padx=2)
+        else:
+            ttk.Button(row, text="Edit",
+                       command=lambda: self._start_record(screenshot_entry, self.screenshot_hotkey_var, "__screenshot__"),
+                       width=8).pack(side=LEFT, padx=2)
+            ttk.Button(row, text="Restore",
+                       command=self._restore_screenshot_hotkey,
+                       width=8).pack(side=LEFT, padx=2)
+
+        # Target Language row
+        lang_row = ttk.Frame(parent)
+        lang_row.pack(fill=X, pady=5, padx=5)
+
+        ttk.Label(lang_row, text="Target Language:", width=22, anchor=W).pack(side=LEFT)
+
+        # Language options: "Auto" + all languages
+        lang_options = ["Auto"] + [lang[0] for lang in LANGUAGES]
+        self.screenshot_lang_var = tk.StringVar(value=self.config.get_screenshot_target_language())
+
+        lang_combo = ttk.Combobox(lang_row, textvariable=self.screenshot_lang_var,
+                                  values=lang_options, width=20, state='readonly')
+        lang_combo.pack(side=LEFT, padx=5)
+
+        # Auto-save on change
+        lang_combo.bind('<<ComboboxSelected>>', lambda e: self._save_screenshot_settings())
+
+        # Info text
+        info_row = ttk.Frame(parent)
+        info_row.pack(fill=X, pady=(0, 10), padx=5)
+        ttk.Label(info_row, text='("Auto" uses the current language selected in main window)',
+                  font=('Segoe UI', 8), foreground='#888888').pack(anchor=W, padx=(22, 0))
+
+    def _restore_screenshot_hotkey(self):
+        """Restore screenshot hotkey to default."""
+        self.screenshot_hotkey_var.set(self.config.SCREENSHOT_HOTKEY_DEFAULT)
+        self._save_screenshot_settings()
+
+    def _save_screenshot_settings(self):
+        """Save screenshot hotkey and target language settings."""
+        if hasattr(self, 'screenshot_hotkey_var'):
+            self.config.set_screenshot_hotkey(self.screenshot_hotkey_var.get())
+        if hasattr(self, 'screenshot_lang_var'):
+            self.config.set_screenshot_target_language(self.screenshot_lang_var.get())
+        logging.info("Auto-saved screenshot settings")
 
     def _add_default_hotkey_row(self, parent, language, hotkey):
         """Add a row for default languages with Restore button."""
@@ -1245,6 +1341,13 @@ class SettingsWindow:
             if row_lang != current_language and row_hotkey.lower() == hotkey.lower():
                 return False, f"'{hotkey}' is already used for {row_lang}"
 
+        # Check screenshot hotkey for duplicates
+        if current_language != "__screenshot__":
+            if hasattr(self, 'screenshot_hotkey_var'):
+                screenshot_key = self.screenshot_hotkey_var.get().strip()
+                if screenshot_key and screenshot_key.lower() == hotkey.lower():
+                    return False, f"'{hotkey}' is already used for Screenshot OCR"
+
         return True, ""
 
     def _on_key_record(self, event, entry_var, entry=None):
@@ -1281,7 +1384,10 @@ class SettingsWindow:
                     entry_var.set(previous if previous and previous != "Press keys..." else "")
                 else:
                     # Valid hotkey - auto-save immediately
-                    self._save_all_hotkeys()
+                    if current_lang == "__screenshot__":
+                        self._save_screenshot_settings()
+                    else:
+                        self._save_all_hotkeys()
 
                 if entry:
                     entry.config(state='readonly')
@@ -1314,6 +1420,18 @@ class SettingsWindow:
             ttk.Checkbutton(parent, text="Check for updates on startup",
                             variable=self.updates_var,
                             command=self._on_updates_toggle).pack(anchor=W, pady=5)
+
+        # Auto-check updates on app startup (with auto-save on toggle)
+        self.auto_check_var = tk.BooleanVar(value=self.config.get_auto_check_updates())
+        if HAS_TTKBOOTSTRAP:
+            ttk.Checkbutton(parent, text="Auto-check for updates on startup",
+                            variable=self.auto_check_var,
+                            command=self._on_auto_check_changed,
+                            bootstyle="round-toggle-success").pack(anchor=W, pady=(0, 5))
+        else:
+            ttk.Checkbutton(parent, text="Auto-check for updates on startup",
+                            variable=self.auto_check_var,
+                            command=self._on_auto_check_changed).pack(anchor=W, pady=(0, 5))
 
         # Check for updates button
         update_frame = ttk.Frame(parent)
@@ -2478,7 +2596,30 @@ class SettingsWindow:
             "  • Win + Alt + J  →  Translate to Japanese",
             "  • Win + Alt + C  →  Translate to Chinese (Simplified)",
             "",
+            "Screenshot Translation:",
+            "  • Win + Alt + S  →  Capture screen region for OCR",
+            "",
             "You can customize hotkeys in the 'Hotkeys' tab.",
+        ])
+
+        # === Section 3.5: Screenshot Translation ===
+        self._create_guide_section(guide_container, "Screenshot Translation", [
+            "Capture any screen region for instant OCR and translation:",
+            "",
+            "How to use:",
+            "1. Press Win + Alt + S",
+            "2. Screen dims with selection overlay",
+            "3. Click and drag to select region",
+            "4. Release to capture and translate",
+            "",
+            "Features:",
+            "  • Multi-monitor support",
+            "  • Configurable target language in Hotkeys tab",
+            "  • 'Open Translator' loads screenshot into Attachments",
+            "",
+            "Requirements:",
+            "  • Vision-capable API (Gemini 2.0+, GPT-4o, Claude 3)",
+            "  • Test API in Settings > API Key to check capability",
         ])
 
         self._create_guide_section(guide_container, "File Translation", [
@@ -2499,6 +2640,7 @@ class SettingsWindow:
             "Tips:",
             "  • You can add multiple files at once",
             "  • Images (PNG, JPG) are also supported for OCR",
+            "  • Double-click any attachment to preview/open",
         ])
 
         self._create_guide_section(guide_container, "Dictionary Mode", [
@@ -2562,7 +2704,7 @@ class SettingsWindow:
 
         # === Section 8: Supported Providers ===
         self._create_guide_section(guide_container, "Supported AI Providers", [
-            "13 providers with 180+ models:",
+            "14 providers with 180+ models:",
             "",
             "Free Tier Available:",
             "  • Google Gemini - 1,500 req/day (Recommended)",
@@ -2570,6 +2712,7 @@ class SettingsWindow:
             "  • Cerebras - High throughput",
             "  • DeepSeek - DeepSeek-R1, V3",
             "  • SambaNova - Llama 405B",
+            "  • HuggingFace - Qwen 2.5, Llama 3.x",
             "",
             "Premium Providers:",
             "  • OpenAI (o3, GPT-4.1, GPT-4o)",
@@ -2703,84 +2846,154 @@ class SettingsWindow:
 
         logging.info("Restored defaults and auto-saved")
 
-    def _check_for_updates_click(self):
-        """Handle Check for Updates button - runs full update flow."""
+    def _check_for_updates_click(self) -> None:
+        """Handle Check for Updates button - runs full update flow with proper error handling."""
         self.check_update_btn.config(state='disabled')
-        self.update_status_label.config(text="Checking...", foreground='gray')
+        self.update_status_label.config(text="Checking for updates...", foreground='gray')
+
+        # Create thread-safe exception container
+        exception_holder = {'error': None}
 
         def run_update_flow():
-            # Step 1: Check for update
-            result = self.updater.check_update()
+            try:
+                # Step 1: Check for update
+                from datetime import datetime
+                logging.info(f"[UPDATE] User initiated update check at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (Current version: {VERSION})")
+                result = self.updater.check_update()
 
-            if result.get('error'):
+                # Log result for debugging
+                logging.info(f"Update check result: {result}")
+
+                if result.get('error'):
+                    error_msg = result['error']
+                    logging.error(f"Update check error: {error_msg}")
+                    # Record failed check for telemetry with classified error type
+                    error_type = classify_error_type(error_msg)
+                    self.config.record_update_check(success=False, error_type=error_type)
+                    self.window.after(0, lambda: self._update_status(
+                        f"Error: {error_msg}", 'red'))
+                    return
+
+                if not result.get('has_update'):
+                    current_version = result.get('version', VERSION)
+                    logging.info(f"No update available. Current: {current_version}")
+                    # Record successful check for telemetry
+                    self.config.record_update_check(success=True)
+                    self.window.after(0, lambda: self._update_status(
+                        f"You're up to date (v{current_version})", 'green'))
+                    return
+
+                # Has update - ask user
+                new_version = result['version']
+                logging.info(f"Update available: {new_version}")
+                # Record successful check for telemetry (update available)
+                self.config.record_update_check(success=True)
+                self.window.after(0, lambda: self._confirm_update(new_version))
+
+            except Exception as e:
+                # Catch any unhandled exceptions
+                logging.error(f"Unexpected error in update flow: {e}", exc_info=True)
+                exception_holder['error'] = str(e)
                 self.window.after(0, lambda: self._update_status(
-                    f"Error: {result['error']}", 'red'))
-                return
+                    f"Unexpected error: {str(e)}", 'red'))
 
-            if not result.get('has_update'):
+        # Use non-daemon thread to ensure exceptions are captured
+        thread = threading.Thread(
+            target=run_update_flow,
+            daemon=False,
+            name=THREAD_NAMES['check']
+        )
+        thread.start()
+
+        # Monitor thread health with timeout
+        def monitor_thread():
+            thread.join(timeout=UPDATE_THREAD_TIMEOUT)
+            if thread.is_alive():
+                logging.error("Update check thread timeout!")
                 self.window.after(0, lambda: self._update_status(
-                    f"You're up to date (v{VERSION})", 'gray'))
-                return
+                    "Update check timed out", 'red'))
 
-            # Has update - ask user
-            self.window.after(0, lambda: self._confirm_update(result['version']))
+        threading.Thread(
+            target=monitor_thread,
+            daemon=True,
+            name=THREAD_NAMES['monitor']
+        ).start()
 
-        threading.Thread(target=run_update_flow, daemon=True).start()
+    def _confirm_update(self, new_version: str) -> None:
+        """Ask user to confirm update with release notes displayed.
 
-    def _confirm_update(self, new_version):
-        """Ask user to confirm update."""
+        Shows different dialogs based on whether running from source or EXE:
+        - Source: Opens browser to GitHub releases page
+        - EXE: Offers to download and install update automatically
+
+        Args:
+            new_version: Version number of available update (e.g., "1.9.7")
+        """
         is_exe = getattr(sys, 'frozen', False)
+
+        # Get release notes from updater
+        release_notes = getattr(self.updater, 'release_notes', '')
+        if release_notes:
+            # Truncate if too long
+            if len(release_notes) > RELEASE_NOTES_MAX_LENGTH:
+                release_notes = release_notes[:RELEASE_NOTES_MAX_LENGTH] + "..."
+            notes_text = f"\n\nWhat's new:\n{release_notes}\n"
+        else:
+            notes_text = "\n"
 
         if not is_exe:
             # Running from source - open download page
+            message = (f"New version v{new_version} available!\n"
+                       f"Current: v{VERSION}\n"
+                       f"{notes_text}"
+                       f"You're running from source.\n"
+                       f"Open download page?")
+
             if HAS_TTKBOOTSTRAP:
                 answer = Messagebox.yesno(
-                    f"New version v{new_version} available!\n\n"
-                    f"Current: v{VERSION}\n\n"
-                    f"You're running from source.\n"
-                    f"Open download page?",
+                    message,
                     title="Update Available", parent=self.window)
                 if answer == "Yes":
                     webbrowser.open(f"https://github.com/{GITHUB_REPO}/releases/latest")
             else:
                 from tkinter import messagebox
-                if messagebox.askyesno("Update Available",
-                    f"New version v{new_version} available!\n\n"
-                    f"Current: v{VERSION}\n\n"
-                    f"You're running from source.\n"
-                    f"Open download page?", parent=self.window):
+                if messagebox.askyesno("Update Available", message, parent=self.window):
                     webbrowser.open(f"https://github.com/{GITHUB_REPO}/releases/latest")
             self._update_status(f"v{new_version} available", 'green')
             return
 
         # Running as exe - offer auto-update
+        message = (f"New version v{new_version} available!\n"
+                   f"Current: v{VERSION}\n"
+                   f"{notes_text}"
+                   f"Download and install now?")
+
         if HAS_TTKBOOTSTRAP:
             answer = Messagebox.yesno(
-                f"New version v{new_version} available!\n\n"
-                f"Current: v{VERSION}\n\n"
-                f"Download and install now?",
+                message,
                 title="Update Available", parent=self.window)
             if answer != "Yes":
                 self._update_status(f"v{new_version} available", 'green')
                 return
         else:
             from tkinter import messagebox
-            if not messagebox.askyesno("Update Available",
-                f"New version v{new_version} available!\n\n"
-                f"Current: v{VERSION}\n\n"
-                f"Download and install now?", parent=self.window):
+            if not messagebox.askyesno("Update Available", message, parent=self.window):
                 self._update_status(f"v{new_version} available", 'green')
                 return
 
         # User accepted - start download
         self._start_update_download(new_version)
 
-    def _start_update_download(self, new_version):
-        """Download update with progress dialog."""
+    def _start_update_download(self, new_version: str) -> None:
+        """Download update with progress dialog.
+
+        Args:
+            new_version: Version number being downloaded (e.g., "1.9.7")
+        """
         # Create progress window
         self.progress_win = tk.Toplevel(self.window)
         self.progress_win.title("Updating")
-        self.progress_win.geometry("350x120")
+        self.progress_win.geometry(PROGRESS_WINDOW_SIZE)
         self.progress_win.resizable(False, False)
         self.progress_win.transient(self.window)
         self.progress_win.grab_set()
@@ -2803,23 +3016,70 @@ class SettingsWindow:
             self.progress_bar = ttk.Progressbar(frame, length=320)
         self.progress_bar.pack(fill=X, pady=10)
 
+        # Add cancel button
+        cancel_btn = ttk.Button(frame, text="Cancel", command=self._cancel_download)
+        cancel_btn.pack(pady=5)
+
+        # Thread-safe cancellation event
+        self.download_cancel_event = threading.Event()
+
         def download_thread():
             def on_progress(percent):
+                if self.download_cancel_event.is_set():
+                    logging.info("Download cancelled by user")
+                    raise DownloadCancelledException("User cancelled download")
                 self.window.after(0, lambda p=percent: self._set_progress(p))
 
-            result = self.updater.download(on_progress)
-            self.window.after(0, lambda: self._on_download_done(result, new_version))
+            try:
+                result = self.updater.download(on_progress)
+                if not self.download_cancel_event.is_set():
+                    self.window.after(0, lambda: self._on_download_done(result, new_version))
+            except DownloadCancelledException:
+                logging.info("Download cancelled by user")
+                self.window.after(0, lambda: self._update_status("Download cancelled", 'gray'))
+            except Exception as e:
+                logging.error(f"Download error: {e}", exc_info=True)
+                self.window.after(0, lambda: self._update_status(f"Download failed: {e}", 'red'))
+            finally:
+                if hasattr(self, 'progress_win') and self.progress_win.winfo_exists():
+                    self.progress_win.destroy()
 
-        threading.Thread(target=download_thread, daemon=True).start()
+        threading.Thread(
+            target=download_thread,
+            daemon=False,
+            name=THREAD_NAMES['download']
+        ).start()
 
-    def _set_progress(self, percent):
-        """Update progress bar."""
+    def _cancel_download(self) -> None:
+        """Cancel ongoing download by setting thread-safe cancellation event."""
+        from datetime import datetime
+        version_info = getattr(self.updater, 'latest_version', 'unknown')
+        logging.info(
+            f"[UPDATE] User cancelled download at {datetime.now().strftime('%H:%M:%S')} "
+            f"(Target version: {version_info}, Thread: {threading.current_thread().name})"
+        )
+        if hasattr(self, 'download_cancel_event'):
+            self.download_cancel_event.set()
+        if hasattr(self, 'progress_text'):
+            self.progress_text.config(text="Cancelling...")
+
+    def _set_progress(self, percent: int) -> None:
+        """Update progress bar with download percentage.
+
+        Args:
+            percent: Download progress percentage (0-100)
+        """
         if hasattr(self, 'progress_bar') and hasattr(self, 'progress_win') and self.progress_win.winfo_exists():
             self.progress_bar['value'] = percent
             self.progress_text.config(text=f"Downloading... {percent}%")
 
-    def _on_download_done(self, result, new_version):
-        """Handle download completion."""
+    def _on_download_done(self, result: dict, new_version: str) -> None:
+        """Handle download completion and prompt for installation.
+
+        Args:
+            result: Download result dict with 'success' and optional 'error' keys
+            new_version: Version number that was downloaded (e.g., "1.9.7")
+        """
         if hasattr(self, 'progress_win') and self.progress_win.winfo_exists():
             self.progress_win.destroy()
 
@@ -2846,7 +3106,19 @@ class SettingsWindow:
             else:
                 self._update_status("Restart app to apply update", '#0066cc')
 
-    def _update_status(self, text, color):
-        """Update status label and re-enable button."""
+    def _update_status(self, text: str, color: str) -> None:
+        """Update status label and re-enable button. Change button text to 'Retry' on error.
+
+        Args:
+            text: Status message to display
+            color: Foreground color for the message ('green', 'red', 'gray', etc.)
+        """
         self.check_update_btn.config(state='normal')
         self.update_status_label.config(text=text, foreground=color)
+
+        # If error, change button text to "Retry"
+        if 'error' in text.lower() or 'failed' in text.lower() or 'timed out' in text.lower():
+            self.check_update_btn.config(text="Retry Update Check")
+            logging.info("Update check failed - retry available")
+        else:
+            self.check_update_btn.config(text="Check for Updates")

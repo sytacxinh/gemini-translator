@@ -1,6 +1,6 @@
 # CrossTrans
 
-![Version](https://img.shields.io/badge/version-1.9.4-blue.svg)
+![Version](https://img.shields.io/badge/version-1.9.7-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.10+-yellow.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Platform](https://img.shields.io/badge/platform-Windows-informational.svg)
@@ -12,6 +12,7 @@ A powerful Windows desktop application for instant text translation using AI. Se
 ## Highlights
 
 - **Instant Translation** - Select text, press hotkey, get translation in tooltip
+- **Screenshot Translation** - Win+Alt+S to capture and translate any screen region
 - **Free Trial Mode** - 100 translations/day without API key
 - **14 AI Providers** - Google Gemini (free!), OpenAI, Claude, DeepSeek, Groq, HuggingFace, and more
 - **File Processing** - Translate documents (.docx, .txt, .srt, .pdf) and images
@@ -23,12 +24,13 @@ A powerful Windows desktop application for instant text translation using AI. Se
 ## Features
 
 ### Quick Translation Hotkeys
-| Hotkey | Language |
-|--------|----------|
-| `Win+Alt+V` | Vietnamese |
-| `Win+Alt+E` | English |
-| `Win+Alt+J` | Japanese |
-| `Win+Alt+C` | Chinese Simplified |
+| Hotkey | Action |
+|--------|--------|
+| `Win+Alt+V` | Translate to Vietnamese |
+| `Win+Alt+E` | Translate to English |
+| `Win+Alt+J` | Translate to Japanese |
+| `Win+Alt+C` | Translate to Chinese Simplified |
+| `Win+Alt+S` | **Screenshot OCR Translation** |
 
 **+ 4 customizable hotkeys** for any language of your choice.
 
@@ -37,11 +39,19 @@ A powerful Windows desktop application for instant text translation using AI. Se
 - Perfect for trying out the app before getting your own API key
 - Quota resets at midnight
 
+### Screenshot Translation
+- **Win+Alt+S** - Capture any screen region for instant OCR and translation
+- **Multi-monitor support** - Works across all connected displays
+- **Visual selection** - Semi-transparent overlay with drag selection
+- **Configurable target language** - Set in Settings > Hotkeys tab
+- **Open Translator integration** - Screenshot loads into Attachments for further editing
+
 ### File Processing
 - **Image Translation** - Drag & drop images for OCR and translation
 - **Document Support** - Process `.docx`, `.txt`, `.srt`, `.pdf` files
 - **Multi-file Batch** - Translate multiple files in a single API request
 - **Drag & Drop** - Simply drop files onto the translator window
+- **Double-click Preview** - Open attached files/images with system default app
 
 ### Multi-Provider Support
 
@@ -203,6 +213,7 @@ CrossTrans/
 │   │   ├── multimodal.py   # Vision processing
 │   │   ├── file_processor.py # Document text extraction
 │   │   ├── pdf_ocr.py      # Scanned PDF OCR
+│   │   ├── screenshot.py   # Screenshot capture for OCR
 │   │   ├── history.py      # Translation history
 │   │   ├── crypto.py       # Secure API key storage (DPAPI)
 │   │   ├── ssl_pinning.py  # SSL certificate pinning
@@ -263,37 +274,48 @@ CrossTrans/
 
 ---
 
-## What's New in v1.9.4
+## What's New in v1.9.7
 
-### HuggingFace Provider Added
-- **New AI provider** - HuggingFace Inference API now supported
-- **14 AI providers** - Up from 13 in previous versions
-- **Models available** - Qwen 2.5, Llama 3.x, Mistral, Phi, Gemma, DeepSeek
-- **Trial mode enhanced** - HuggingFace added to fallback chain
+### Screenshot Translation
+- **New hotkey** - Win+Alt+S captures screen region for OCR translation
+- **Multi-monitor support** - Works across all connected displays
+- **Visual selection** - Semi-transparent overlay with drag selection
+- **Target language** - Configure in Settings > Hotkeys tab
+- **Open Translator integration** - Screenshot loads into Attachments
+
+### Double-click to Preview
+- **Attachment preview** - Double-click any attached file to open with system default app
+- **Tooltip hint** - "(Double-click to preview)" shown on hover
+- **Error handling** - Graceful warning if file no longer exists
 
 ### Improvements
-- **Settings enhancement** - Test button now saves API key even on test failure
-- **Backend analytics** - Usage tracking for better service monitoring
+- **Auto-check updates** - Non-intrusive toast notification on startup
+- **14 AI providers** - HuggingFace included in provider list
 
-### Previous in v1.9.3
-- Enhanced Trial mode security with app context validation
-- Updated Google Gemini models (only active, free-tier)
-- Fixed Dictionary button color
+### Previous in v1.9.6
+- Critical bug fix for Dictionary Language Pack in EXE builds
+- Auto-detects system Python when running from EXE
 
-### Previous in v1.9.2
-- **Dictionary Mode** - Interactive word selection with definitions, pronunciation, examples
-- **180+ models** from 13 providers
+### Previous in v1.9.5
+- Fixed API Key saving position issue
+- Animated "Installing..." text for Dictionary Language Pack
+- Google provider now uses REST API (EXE 30MB smaller)
 
-### Previous in v1.9.0
+### Previous in v1.9.4
+- HuggingFace provider added (14 AI providers total)
+- Test button now saves API key even on test failure
+
+### Previous in v1.9.2-1.9.3
+- Dictionary Mode with interactive word selection
+- Enhanced Trial mode security
+- 180+ models from 14 providers
+
+### Previous in v1.7.0-1.9.0
 - Trial Mode - 100 free translations/day without API key
-- Rebranding from "AI Translator" to "CrossTrans"
-
-### Previous in v1.7.0-1.8.0
 - Windows Hello Authentication for API key protection
 - Smart Provider Fallback - auto-switch to backup API
 - Scanned PDF OCR support
-- Toast notifications
-- Search History functionality
+- Toast notifications and Search History
 
 ---
 
@@ -313,7 +335,7 @@ python main.py
 ```bash
 pip install pyinstaller
 pyinstaller CrossTrans.spec
-# Output: dist/CrossTrans_v1.9.4.exe
+# Output: dist/CrossTrans_v1.9.7.exe
 ```
 
 ### Running Tests

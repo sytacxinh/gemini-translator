@@ -30,6 +30,10 @@ class Config:
         "Chinese Simplified": "win+alt+c"
     }
 
+    # Screenshot hotkey (for vision/OCR translation)
+    SCREENSHOT_HOTKEY_DEFAULT = "win+alt+s"
+    SCREENSHOT_TARGET_LANGUAGE_DEFAULT = "Auto"  # "Auto" = use current selected_language
+
     # Languages that can be added as custom hotkeys
     DEFAULT_LANGUAGES = ["Vietnamese", "English", "Japanese", "Chinese Simplified"]
     MAX_CUSTOM_HOTKEYS = 4  # Max 4 additional custom hotkeys
@@ -38,6 +42,8 @@ class Config:
         "api_keys": [],  # List of {model_name, api_key, provider, vision_capable, file_capable} dicts
         "hotkeys": DEFAULT_HOTKEYS.copy(),
         "custom_hotkeys": {},  # Custom language hotkeys (max 4)
+        "screenshot_hotkey": SCREENSHOT_HOTKEY_DEFAULT,  # Screenshot OCR hotkey
+        "screenshot_target_language": SCREENSHOT_TARGET_LANGUAGE_DEFAULT,  # Target language for screenshot OCR
         "autostart": False,
         "check_updates": False,  # Default to False
         "theme": "darkly",
@@ -273,6 +279,29 @@ class Config:
         all_hotkeys.update(self.get_custom_hotkeys())
         return all_hotkeys
 
+    # Screenshot hotkey management
+    def get_screenshot_hotkey(self) -> str:
+        """Get screenshot hotkey combination for vision/OCR translation."""
+        return self._config.get('screenshot_hotkey', self.SCREENSHOT_HOTKEY_DEFAULT)
+
+    def set_screenshot_hotkey(self, hotkey: str):
+        """Set screenshot hotkey combination."""
+        self._config['screenshot_hotkey'] = hotkey
+        self.save()
+
+    def get_screenshot_target_language(self) -> str:
+        """Get target language for screenshot translation.
+
+        Returns:
+            Language name or "Auto" to use current selected language
+        """
+        return self._config.get('screenshot_target_language', self.SCREENSHOT_TARGET_LANGUAGE_DEFAULT)
+
+    def set_screenshot_target_language(self, language: str):
+        """Set target language for screenshot translation."""
+        self._config['screenshot_target_language'] = language
+        self.save()
+
     def restore_defaults(self):
         """Restore all settings to defaults except API keys."""
         api_keys = self._config.get('api_keys', [])
@@ -347,6 +376,15 @@ class Config:
     def set_check_updates(self, enable: bool):
         """Set check for updates setting."""
         self._config['check_updates'] = enable
+        self.save()
+
+    def get_auto_check_updates(self) -> bool:
+        """Get whether to auto-check updates on startup."""
+        return self._config.get('auto_check_updates', False)
+
+    def set_auto_check_updates(self, enabled: bool):
+        """Set auto-check updates on startup."""
+        self._config['auto_check_updates'] = enabled
         self.save()
 
     # Theme settings
@@ -437,6 +475,63 @@ class Config:
     def has_any_nlp_installed(self) -> bool:
         """Check if any NLP language pack is installed."""
         return len(self.get_nlp_installed()) > 0
+
+    # Update check telemetry (local only)
+    def record_update_check(self, success: bool, error_type: Optional[str] = None) -> None:
+        """Record update check attempt for diagnostics (local only - no data sent externally).
+
+        Args:
+            success: Whether the update check succeeded
+            error_type: Type of error if failed (must be from VALID_ERROR_TYPES:
+                        'network', 'rate_limit', 'ssl', 'parse_error', 'timeout', 'other')
+
+        Note:
+            All data is stored locally in config.json. Nothing is sent externally.
+            This helps diagnose update issues and track reliability.
+        """
+        try:
+            from datetime import datetime
+
+            # Validate error_type if provided
+            if error_type is not None:
+                # Import valid types - avoid circular import by importing here
+                from src.utils.updates import VALID_ERROR_TYPES
+                if error_type not in VALID_ERROR_TYPES:
+                    logging.warning(
+                        f"Invalid error_type '{error_type}'. Must be one of {VALID_ERROR_TYPES}. "
+                        f"Using 'other' instead."
+                    )
+                    error_type = 'other'
+
+            if 'update_stats' not in self._config:
+                self._config['update_stats'] = {
+                    'total': 0,
+                    'success': 0,
+                    'failed': 0,
+                    'last_check': None,
+                    'last_success': None
+                }
+
+            stats = self._config['update_stats']
+            stats['total'] += 1
+            stats['last_check'] = datetime.now().isoformat()
+
+            if success:
+                stats['success'] += 1
+                stats['last_success'] = datetime.now().isoformat()
+            else:
+                stats['failed'] += 1
+                if error_type:
+                    if 'error_types' not in stats:
+                        stats['error_types'] = {}
+                    stats['error_types'][error_type] = stats['error_types'].get(error_type, 0) + 1
+
+            self.save()
+            logging.debug(f"Update check recorded: success={success}, total={stats['total']}")
+
+        except Exception as e:
+            # Don't let telemetry errors break the app
+            logging.warning(f"Failed to record update check telemetry: {e}")
 
     # Generic getter/setter
     def get(self, key: str, default: Any = None) -> Any:
