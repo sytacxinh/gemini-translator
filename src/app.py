@@ -224,6 +224,75 @@ class TranslatorApp:
         if self.config.get_auto_check_updates():
             self._startup_update_check()
 
+        # Schedule daily API key re-check if trial mode is forced
+        self._schedule_trial_recheck()
+
+    def _schedule_trial_recheck(self):
+        """Schedule re-check of API keys when in forced trial mode."""
+        if not self.config.get_trial_mode_forced():
+            return
+
+        # Check if we need to re-test (24h since last check)
+        last_check = self.config.get_trial_last_api_check()
+        if last_check:
+            try:
+                from datetime import datetime, timedelta
+                last_dt = datetime.fromisoformat(last_check)
+                if datetime.now() - last_dt >= timedelta(hours=24):
+                    # Time to re-check
+                    self.root.after(5000, self._recheck_api_keys_for_trial)
+            except Exception as e:
+                logging.warning(f"Failed to parse last API check time: {e}")
+
+        # Schedule next check in 1 hour
+        self.root.after(3600000, self._schedule_trial_recheck)  # 1 hour
+
+    def _recheck_api_keys_for_trial(self):
+        """Re-check API keys and disable trial mode if any works."""
+        from datetime import datetime
+        from src.core.api_manager import AIAPIManager
+
+        logging.info("Re-checking API keys for trial mode...")
+
+        api_keys = self.config.get_api_keys()
+        if not api_keys:
+            return
+
+        manager = AIAPIManager()
+        any_working = False
+
+        for key_config in api_keys:
+            key = key_config.get('api_key', '').strip()
+            if not key:
+                continue
+
+            model = key_config.get('model_name', '').strip() or 'Auto'
+            provider = key_config.get('provider', 'Auto')
+
+            try:
+                if manager.test_connection(model, key, provider):
+                    any_working = True
+                    self.config.api_status_cache[key] = True
+                    logging.info(f"API key now working: {key[:8]}...")
+                    break
+            except Exception:
+                self.config.api_status_cache[key] = False
+
+        # Update last check time
+        self.config.set_trial_last_api_check(datetime.now().isoformat())
+
+        if any_working:
+            # Disable trial mode
+            self.config.set_trial_mode_forced(False)
+            logging.info("API key now working - disabled forced trial mode")
+
+            # Show toast notification
+            self.toast.show(
+                "API Key Restored",
+                "Your API key is now working. Trial mode disabled.",
+                duration=5000
+            )
+
     def _startup_update_check(self) -> None:
         """Silent update check on startup (non-intrusive).
 
@@ -1427,8 +1496,18 @@ IMPORTANT: Translate ALL text to {self.selected_language}. Process ALL files. Ex
             # Auto-proceed with detected language
             self._open_dictionary_with_language(original, detected_lang)
         else:
-            # Show language selection dialog
-            self._show_language_selection_dialog(original, detected_lang if confidence > 0.3 else None)
+            # Determine if language was detected but not installed
+            detected_but_not_installed = (
+                confidence >= CONFIDENCE_THRESHOLD and
+                detected_lang and
+                not nlp_manager.is_installed(detected_lang)
+            )
+            # Show language selection dialog with context
+            self._show_language_selection_dialog(
+                original,
+                detected_lang if confidence > 0.3 else None,
+                detected_but_not_installed=detected_but_not_installed
+            )
 
     def _show_nlp_not_installed_dialog(self):
         """Show dialog when no NLP language pack is installed."""
@@ -1517,8 +1596,15 @@ IMPORTANT: Translate ALL text to {self.selected_language}. Process ALL files. Ex
         if self.settings_window and hasattr(self.settings_window, 'open_dictionary_tab'):
             self.settings_window.open_dictionary_tab()
 
-    def _show_language_selection_dialog(self, original_text: str, suggested_lang: str = None):
-        """Show dialog to select source language for dictionary mode."""
+    def _show_language_selection_dialog(self, original_text: str, suggested_lang: str = None,
+                                         detected_but_not_installed: bool = False):
+        """Show dialog to select source language for dictionary mode.
+
+        Args:
+            original_text: Text to analyze
+            suggested_lang: Suggested language from detection
+            detected_but_not_installed: True if language was detected but pack not installed
+        """
         installed_languages = nlp_manager.get_installed_languages()
         if not installed_languages:
             self._show_nlp_not_installed_dialog()
@@ -1530,9 +1616,10 @@ IMPORTANT: Translate ALL text to {self.selected_language}. Process ALL files. Ex
         dialog.transient(self.popup)
         dialog.grab_set()
 
-        # Center on screen - increased height for better button visibility
+        # Center on screen - taller if showing install prompt
         dialog.update_idletasks()
-        w, h = 380, 280
+        w = 400
+        h = 340 if detected_but_not_installed else 280
         x = (dialog.winfo_screenwidth() - w) // 2
         y = (dialog.winfo_screenheight() - h) // 2
         dialog.geometry(f"{w}x{h}+{x}+{y}")
@@ -1543,11 +1630,49 @@ IMPORTANT: Translate ALL text to {self.selected_language}. Process ALL files. Ex
         frame = ttk.Frame(dialog, padding=20)
         frame.pack(fill=BOTH, expand=True)
 
-        ttk.Label(frame, text="⚠️ Cannot detect language",
-                  font=('Segoe UI', 11, 'bold')).pack(pady=(0, 10))
+        # Open Settings → Dictionary tab
+        def open_settings_dict():
+            dialog.destroy()
+            self.show_settings()
+            self.root.after(500, lambda: self._open_settings_dictionary_tab())
 
-        ttk.Label(frame, text="Select the source language:",
-                  font=('Segoe UI', 10)).pack(anchor='w', pady=(0, 5))
+        if detected_but_not_installed and suggested_lang:
+            # Case: Language detected but not installed - show prominent install option
+            ttk.Label(frame, text=f"📖 Detected: {suggested_lang}",
+                      font=('Segoe UI', 11, 'bold')).pack(pady=(0, 5))
+
+            # Warning that pack not installed
+            warning_frame = ttk.Frame(frame)
+            warning_frame.pack(fill=X, pady=(0, 10))
+            ttk.Label(warning_frame, text=f"⚠️ {suggested_lang} language pack is not installed.",
+                      font=('Segoe UI', 10), foreground='#ffaa00').pack(anchor='w')
+
+            # Install button - prominent
+            install_frame = ttk.Frame(frame)
+            install_frame.pack(fill=X, pady=(0, 10))
+
+            install_btn_kwargs = {
+                "text": f"📥 Install {suggested_lang} Pack",
+                "command": open_settings_dict,
+                "width": 25
+            }
+            if HAS_TTKBOOTSTRAP:
+                install_btn_kwargs["bootstyle"] = "info"
+            ttk.Button(install_frame, **install_btn_kwargs).pack(pady=5)
+
+            # Separator
+            ttk.Separator(frame, orient='horizontal').pack(fill=X, pady=5)
+
+            # Alternative: select from installed
+            ttk.Label(frame, text="Or select from installed languages:",
+                      font=('Segoe UI', 10), foreground='#888888').pack(anchor='w', pady=(5, 5))
+        else:
+            # Case: Cannot detect language - show generic message
+            ttk.Label(frame, text="⚠️ Cannot detect language",
+                      font=('Segoe UI', 11, 'bold')).pack(pady=(0, 10))
+
+            ttk.Label(frame, text="Select the source language:",
+                      font=('Segoe UI', 10)).pack(anchor='w', pady=(0, 5))
 
         # Combobox for language selection
         lang_var = tk.StringVar()
@@ -1561,19 +1686,15 @@ IMPORTANT: Translate ALL text to {self.selected_language}. Process ALL files. Ex
         elif installed_languages:
             lang_var.set(installed_languages[0])
 
-        ttk.Label(frame, text="Only installed language packs are shown.",
-                  font=('Segoe UI', 9), foreground='#888888').pack(anchor='w', pady=(0, 10))
+        if not detected_but_not_installed:
+            ttk.Label(frame, text="Only installed language packs are shown.",
+                      font=('Segoe UI', 9), foreground='#888888').pack(anchor='w', pady=(0, 10))
 
-        # Install more link
-        def open_settings_dict():
-            dialog.destroy()
-            self.show_settings()
-            self.root.after(500, lambda: self._open_settings_dictionary_tab())
-
-        install_link = tk.Label(frame, text="Install more languages →", fg='#4da6ff',
-                               bg='#2b2b2b', font=('Segoe UI', 9, 'underline'), cursor='hand2')
-        install_link.pack(anchor='w')
-        install_link.bind('<Button-1>', lambda e: open_settings_dict())
+            # Install more link
+            install_link = tk.Label(frame, text="Install more languages →", fg='#4da6ff',
+                                   bg='#2b2b2b', font=('Segoe UI', 9, 'underline'), cursor='hand2')
+            install_link.pack(anchor='w')
+            install_link.bind('<Button-1>', lambda e: open_settings_dict())
 
         # Buttons
         btn_frame = ttk.Frame(frame)

@@ -56,7 +56,10 @@ class Config:
         # Provider health tracking for smart fallback
         "provider_health": {},
         # NLP language packs for Dictionary mode
-        "nlp_installed": []  # List of installed language names (e.g., ["Vietnamese", "English"])
+        "nlp_installed": [],  # List of installed language names (e.g., ["Vietnamese", "English"])
+        # Trial mode settings
+        "trial_mode_forced": False,  # User manually enabled trial mode
+        "trial_last_api_check": ""   # ISO datetime of last API check
     }
 
     def __init__(self):
@@ -385,6 +388,25 @@ class Config:
     def set_auto_check_updates(self, enabled: bool):
         """Set auto-check updates on startup."""
         self._config['auto_check_updates'] = enabled
+        self.save()
+
+    # Trial mode settings
+    def get_trial_mode_forced(self) -> bool:
+        """Get whether trial mode is forced by user."""
+        return self._config.get('trial_mode_forced', False)
+
+    def set_trial_mode_forced(self, enabled: bool):
+        """Set trial mode forced flag."""
+        self._config['trial_mode_forced'] = enabled
+        self.save()
+
+    def get_trial_last_api_check(self) -> str:
+        """Get ISO datetime of last API check for trial mode."""
+        return self._config.get('trial_last_api_check', '')
+
+    def set_trial_last_api_check(self, dt_str: str):
+        """Set last API check datetime for trial mode."""
+        self._config['trial_last_api_check'] = dt_str
         self.save()
 
     # Theme settings

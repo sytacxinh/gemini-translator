@@ -251,15 +251,24 @@ class WordButtonFrame:
         Returns:
             List of tokens/words
         """
+        import logging
+        logging.info(f"[DICT_TOKENIZE] language={self.language}, text_len={len(text)}")
+
         if self.language:
             try:
                 from src.core.nlp_manager import nlp_manager
-                if nlp_manager.is_installed(self.language):
-                    return nlp_manager.tokenize(text, self.language)
-            except Exception:
-                pass  # Fallback to simple split
+                # Vietnamese now uses subprocess isolation to handle potential native code crashes
+                is_inst = nlp_manager.is_installed(self.language)
+                logging.info(f"[DICT_TOKENIZE] is_installed({self.language})={is_inst}")
+                if is_inst:
+                    result = nlp_manager.tokenize(text, self.language)
+                    logging.info(f"[DICT_TOKENIZE] NLP result: {len(result)} tokens, first 5: {result[:5]}")
+                    return result
+            except Exception as e:
+                logging.error(f"[DICT_TOKENIZE] Exception: {e}", exc_info=True)
 
         # Simple fallback: split on whitespace
+        logging.info(f"[DICT_TOKENIZE] Using whitespace fallback")
         return re.findall(r'\S+', text)
 
     def _on_word_click(self, index: int, event):

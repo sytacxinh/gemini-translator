@@ -49,17 +49,26 @@ class TranslationService:
         # Check if there's at least one valid (non-empty) API key
         has_valid_key = False
         for config in api_keys:
-            if config.get('api_key', '').strip():
-                has_valid_key = True
-                break
+            key = config.get('api_key', '').strip()
+            if key:
+                # Check cache - if cached as True or never tested, assume valid
+                cached = self.config.api_status_cache.get(key)
+                if cached is True or cached is None:
+                    has_valid_key = True
+                    break
+
+        # Check if trial mode is forced by user
+        trial_forced = self.config.get_trial_mode_forced()
 
         # Check trial availability with debug logging
         trial_available = self._is_trial_available()
-        logging.info(f"[Trial] has_valid_key={has_valid_key}, trial_available={trial_available}")
+        logging.info(f"[Trial] has_valid_key={has_valid_key}, trial_forced={trial_forced}, trial_available={trial_available}")
         logging.info(f"[Trial] TRIAL_MODE_ENABLED={TRIAL_MODE_ENABLED}, TRIAL_PROXY_URL='{TRIAL_PROXY_URL}'")
 
-        # Determine if trial mode should be used
-        self._is_trial_mode = not has_valid_key and trial_available
+        # Determine if trial mode should be used:
+        # 1. No valid key AND trial available (auto-detect)
+        # 2. OR trial forced by user
+        self._is_trial_mode = (not has_valid_key and trial_available) or (trial_forced and trial_available)
 
         if self._is_trial_mode and self.trial_client is None:
             self.trial_client = TrialAPIClient(self.quota_manager.device_id)
@@ -122,6 +131,7 @@ class TranslationService:
             detected_lang, confidence = nlp_manager.detect_language(text)
 
             # Use NLP tokenization if available and confident
+            # Vietnamese now uses subprocess isolation to handle potential native code crashes
             if confidence >= 0.6 and nlp_manager.is_installed(detected_lang):
                 tokens = nlp_manager.tokenize(text, detected_lang)
                 # Filter out empty tokens and punctuation-only tokens
@@ -172,15 +182,19 @@ Additional instructions from user: {custom_prompt}"""
             return self.dictionary_lookup(text, target_language)
         else:
             # No custom prompt (quick hotkey translation) → enforce target language
-            base_prompt = f"""Translate the following text to {target_language}.
+            # Structure: text first with delimiters, then rules at end
+            base_prompt = f"""Translate the text below to {target_language}.
 
-IMPORTANT: Your response MUST be in {target_language} only.
-- Return ONLY the translation, no explanations or additional text
-- If text is already in {target_language}, return it as-is or rephrase naturally IN {target_language}
-- NEVER output in any language other than {target_language}
-"""
+===TEXT TO TRANSLATE===
+{text}
+===END OF TEXT===
 
-        prompt = f"{base_prompt}\n\nText to translate:\n{text}"
+Rules (DO NOT include these in your response):
+1. Output ONLY the translation in {target_language}
+2. No explanations, no meta-text, no repetition of these rules
+3. If already in {target_language}, return as-is or rephrase naturally"""
+
+        prompt = base_prompt
 
         try:
             # Use trial mode if active
@@ -244,7 +258,7 @@ IMPORTANT: Your response MUST be in {target_language} only.
 2. **Translation**: actual {target_language} translation (REQUIRED)
 3. **Definition**: explanation in {target_language} (REQUIRED)
 4. **Word Type**: noun/verb/adjective/adverb/etc.
-5. **Pronunciation**: /IPA/
+5. **Pronunciation**: /IPA/, /{target_language} phonetic/
 6. **Examples**:
    - Source language sentence → {target_language} translation
    - Source language sentence → {target_language} translation
@@ -256,7 +270,10 @@ IMPORTANT: Your response MUST be in {target_language} only.
 - FILL IN all fields - never leave blank after colon
 - Examples must be in source language (same as input word)
 - All translations must be in {target_language}
-- Provide entry for ALL {len(words)} word(s)"""
+- Provide entry for ALL {len(words)} word(s)
+- Pronunciation: provide both IPA and {target_language} phonetic
+  Example: hello → /həˈloʊ/, /ハロー/ (if target is Japanese)
+  Example: 雨氷 → /uːhjou/, /u-hyô/ (if target is Vietnamese)"""
 
         try:
             # Use trial mode if active

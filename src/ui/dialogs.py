@@ -52,54 +52,64 @@ class APIErrorDialog:
 
         # Warning icon and title
         if HAS_TTKBOOTSTRAP:
-            ttk.Label(main, text="API Key Error", font=('Segoe UI', 16, 'bold'),
+            ttk.Label(main, text="⚠️ API Key Not Available", font=('Segoe UI', 16, 'bold'),
                       bootstyle="danger").pack(anchor=W)
         else:
-            lbl = ttk.Label(main, text="API Key Error", font=('Segoe UI', 16, 'bold'))
+            lbl = ttk.Label(main, text="⚠️ API Key Not Available", font=('Segoe UI', 16, 'bold'))
             lbl.pack(anchor=W)
 
-        ttk.Label(main, text="Your AI API key is not working or not configured.",
-                  font=('Segoe UI', 10), wraplength=450).pack(anchor=W, pady=(10, 20))
+        ttk.Label(main, text="No working API key found. Please try one of the following:",
+                  font=('Segoe UI', 10), wraplength=450).pack(anchor=W, pady=(10, 15))
 
         # Instructions
-        ttk.Label(main, text="How to fix:", font=('Segoe UI', 11, 'bold')).pack(anchor=W)
-
         instructions = ttk.Frame(main)
-        instructions.pack(fill=X, pady=10)
+        instructions.pack(fill=X, pady=5)
 
-        ttk.Label(instructions, text="1. Get a free API key at:",
-                  font=('Segoe UI', 10)).pack(anchor=W)
+        # Option 1: Get API key
+        ttk.Label(instructions, text="1. Get a free API key:",
+                  font=('Segoe UI', 10, 'bold')).pack(anchor=W)
         if HAS_TTKBOOTSTRAP:
-            ttk.Button(instructions, text="https://aistudio.google.com/app/apikey",
+            ttk.Button(instructions, text="   Google AI Studio (Free, 1500 req/day)",
                        command=lambda: webbrowser.open("https://aistudio.google.com/app/apikey"),
-                       bootstyle="link").pack(anchor=W, padx=(15, 0))
+                       bootstyle="link").pack(anchor=W)
         else:
-            ttk.Button(instructions, text="https://aistudio.google.com/app/apikey",
-                       command=lambda: webbrowser.open("https://aistudio.google.com/app/apikey")).pack(anchor=W, padx=(15, 0))
+            ttk.Button(instructions, text="   Google AI Studio (Free, 1500 req/day)",
+                       command=lambda: webbrowser.open("https://aistudio.google.com/app/apikey")).pack(anchor=W)
 
-        ttk.Label(instructions, text="\n2. Open Settings and enter your API key.",
+        # Option 2: Enable Trial Mode
+        ttk.Label(instructions, text="\n2. Enable Trial Mode:",
+                  font=('Segoe UI', 10, 'bold')).pack(anchor=W)
+        ttk.Label(instructions, text="   Use shared API without your own key (100 requests/day)",
                   font=('Segoe UI', 10)).pack(anchor=W)
+        ttk.Label(instructions, text="   Go to Settings → API Key → Enable Trial Mode",
+                  font=('Segoe UI', 10), foreground='#888888').pack(anchor=W)
 
         # Buttons
         btn_frame = ttk.Frame(main)
         btn_frame.pack(fill=X, pady=20)
 
-        if self.on_open_settings:
+        if self.on_open_settings or self.on_open_settings_tab:
             if HAS_TTKBOOTSTRAP:
-                ttk.Button(btn_frame, text="Open Settings",
+                ttk.Button(btn_frame, text="Open API Key Settings",
                            command=self._open_settings,
-                           bootstyle="success", width=15).pack(side=LEFT)
+                           bootstyle="primary", width=20).pack(side=LEFT)
             else:
-                ttk.Button(btn_frame, text="Open Settings",
+                ttk.Button(btn_frame, text="Open API Key Settings",
                            command=self._open_settings,
-                           width=15).pack(side=LEFT)
+                           width=20).pack(side=LEFT)
 
         if HAS_TTKBOOTSTRAP:
             ttk.Button(btn_frame, text="Close", command=self.window.destroy,
-                       bootstyle="secondary", width=15).pack(side=RIGHT)
+                       bootstyle="secondary", width=10).pack(side=RIGHT)
         else:
             ttk.Button(btn_frame, text="Close", command=self.window.destroy,
-                       width=15).pack(side=RIGHT)
+                       width=10).pack(side=RIGHT)
+
+        # Trial mode tip
+        tip_frame = ttk.Frame(main)
+        tip_frame.pack(fill=X, pady=(10, 0))
+        ttk.Label(tip_frame, text="💡 Tip: Trial Mode is great for trying the app before getting your own API key",
+                  font=('Segoe UI', 9, 'italic'), foreground='#4da6ff', wraplength=450).pack(anchor=W)
 
     def _open_settings(self):
         """Open settings at API Key tab and close this dialog."""

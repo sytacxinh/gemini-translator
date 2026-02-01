@@ -236,8 +236,18 @@ LANGUAGE_PACKS: Dict[str, LanguagePack] = {
     "Vietnamese": LanguagePack(
         name="Vietnamese",
         code="vi",
-        packages=["underthesea"],
-        size_mb=45,
+        # Pin underthesea_core to 1.0.7 - version 2.0.0+ has CPU instruction compatibility issues
+        # (causes 'Illegal instruction' SIGILL on some CPUs)
+        # Dependencies must be listed BEFORE underthesea (which is installed with --no-deps)
+        packages=[
+            "underthesea_core==1.0.7",
+            "scikit-learn",
+            "python-crfsuite",
+            "joblib",
+            "PyYAML",
+            "underthesea",  # Must be LAST - installed with --no-deps to preserve pinned core
+        ],
+        size_mb=120,  # Increased due to scikit-learn
         module_check="underthesea",
         category="Asian"
     ),
@@ -731,6 +741,12 @@ class NLPManager:
                     pip_cmd = [python_exe, "-m", "pip", "install", package,
                                "--quiet", "--disable-pip-version-check"]
 
+                    # For Vietnamese: install underthesea with --no-deps to prevent
+                    # it from upgrading underthesea_core (we pinned it to 1.0.7)
+                    if package == "underthesea":
+                        pip_cmd.append("--no-deps")
+                        logging.info(f"Installing {package} with --no-deps to preserve pinned underthesea_core")
+
                     # For EXE builds, install to custom directory to avoid conflicts
                     frozen = is_frozen()
                     logging.info(f"=== Install {package}: is_frozen={frozen}, python_exe={python_exe} ===")
@@ -744,33 +760,24 @@ class NLPManager:
 
                     logging.info(f"pip command: {' '.join(pip_cmd)}")
 
-                    process = subprocess.Popen(
+                    # Use subprocess.run() to prevent pipe deadlock
+                    # (Popen + polling without reading pipes can deadlock when output > 64KB buffer)
+                    result = subprocess.run(
                         pip_cmd,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        stdin=subprocess.DEVNULL,  # Prevent stdin prompts
+                        capture_output=True,  # Automatically handles pipe reading
                         text=True,
+                        timeout=300,  # 5 minutes
+                        stdin=subprocess.DEVNULL,
                         creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
                     )
 
-                    # Poll with timeout to avoid blocking indefinitely
-                    timeout_seconds = 300  # 5 minutes
-                    start_time = time.time()
-
-                    while process.poll() is None:
-                        if time.time() - start_time > timeout_seconds:
-                            process.kill()
-                            return False, f"Installation of {package} timed out"
-                        time.sleep(0.5)  # Check every 0.5 seconds
-
-                    # Get output after process completes
-                    stdout, stderr = process.communicate(timeout=10)
-
-                    if process.returncode != 0:
-                        error_msg = stderr or f"Failed to install {package}"
+                    if result.returncode != 0:
+                        error_msg = result.stderr or f"Failed to install {package}"
                         logging.error(f"pip install error: {error_msg}")
                         return False, error_msg
 
+                except subprocess.TimeoutExpired:
+                    return False, f"Installation of {package} timed out (5 min)"
                 except Exception as e:
                     logging.error(f"Error installing {package}: {e}")
                     return False, f"Error installing {package}: {str(e)}"
@@ -781,33 +788,24 @@ class NLPManager:
                     progress_callback("Downloading language model...", 85)
 
                 try:
-                    process = subprocess.Popen(
+                    # Use subprocess.run() to prevent pipe deadlock
+                    result = subprocess.run(
                         pack.post_install,
                         shell=True,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        stdin=subprocess.DEVNULL,
+                        capture_output=True,
                         text=True,
+                        timeout=600,  # 10 minutes for model download
+                        stdin=subprocess.DEVNULL,
                         creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
                     )
 
-                    # Poll with timeout
-                    timeout_seconds = 600  # 10 minutes for model download
-                    start_time = time.time()
-
-                    while process.poll() is None:
-                        if time.time() - start_time > timeout_seconds:
-                            process.kill()
-                            return False, "Language model download timed out"
-                        time.sleep(0.5)
-
-                    stdout, stderr = process.communicate(timeout=10)
-
-                    if process.returncode != 0:
-                        error_msg = stderr or "Failed to download language model"
+                    if result.returncode != 0:
+                        error_msg = result.stderr or "Failed to download language model"
                         logging.error(f"Post-install error: {error_msg}")
                         return False, error_msg
 
+                except subprocess.TimeoutExpired:
+                    return False, "Language model download timed out (10 min)"
                 except Exception as e:
                     logging.error(f"Post-install error: {e}")
                     return False, f"Post-install error: {str(e)}"
@@ -930,6 +928,8 @@ class NLPManager:
         logging.info(f"=== Starting uninstall of {language} ===")
 
         try:
+            import os  # Import at top of try block (needed for all languages, not just UDPipe)
+
             # 0. FIRST: Clear caches and remove from sys.modules to release file locks
             #    This MUST happen BEFORE pip uninstall or files may be locked
             self._installed_cache.pop(language, None)
@@ -962,7 +962,6 @@ class NLPManager:
 
             # 1. Remove UDPipe model file if present
             if pack.udpipe_model:
-                import os
                 current_step += 1
                 progress = int((current_step / total_steps) * 80)
 
@@ -1166,19 +1165,27 @@ class NLPManager:
         Returns:
             List of tokens (words/phrases)
         """
+        logging.info(f"[TOKENIZE] Called for language={language}, text_len={len(text)}")
+
         if not self.is_installed(language):
+            logging.info(f"[TOKENIZE] {language} not installed, using simple tokenize")
             return self._simple_tokenize(text)
 
         # Lazy load tokenizer
         if language not in self._tokenizers:
+            logging.info(f"[TOKENIZE] Loading tokenizer for {language}")
             self._load_tokenizer(language)
 
         tokenizer = self._tokenizers.get(language)
         if not tokenizer:
+            logging.warning(f"[TOKENIZE] Tokenizer for {language} is None, using simple tokenize")
             return self._simple_tokenize(text)
 
         try:
-            return tokenizer(text)
+            logging.info(f"[TOKENIZE] Calling tokenizer for {language}: {tokenizer}")
+            result = tokenizer(text)
+            logging.info(f"[TOKENIZE] Result: {len(result)} tokens")
+            return result
         except Exception as e:
             logging.error(f"Tokenization error for {language}: {e}")
             return self._simple_tokenize(text)
@@ -1193,6 +1200,99 @@ class NLPManager:
             List of tokens
         """
         return re.findall(r'\S+', text)
+
+    def _safe_tokenize_vietnamese(self, text: str) -> List[str]:
+        """Tokenize Vietnamese using subprocess to isolate potential native code crashes.
+
+        underthesea uses native code (underthesea_core, python-crfsuite) that may
+        cause 'Illegal instruction' (SIGILL) on some CPUs. This cannot be caught
+        by Python try-except. Running in subprocess isolates the crash and allows
+        graceful fallback to simple tokenization.
+
+        Args:
+            text: Text to tokenize
+
+        Returns:
+            List of Vietnamese tokens, or simple whitespace tokens if crash occurs
+        """
+        import json
+
+        # Build tokenization script - handles both success and Python-level errors
+        # IMPORTANT: Must set UTF-8 encoding for Vietnamese characters on Windows
+        script = f'''
+import sys
+import json
+sys.stdout.reconfigure(encoding='utf-8')
+try:
+    from underthesea import word_tokenize
+    result = word_tokenize({repr(text)})
+    print(json.dumps(result, ensure_ascii=False))
+except Exception as e:
+    print(json.dumps({{"error": str(e)}}))
+'''
+
+        try:
+            # Find Python executable (handles EXE mode where sys.executable is the EXE)
+            python_exe = get_python_executable()
+            if not python_exe:
+                logging.warning("No Python executable found for Vietnamese tokenization, using simple tokenize")
+                return self._simple_tokenize(text)
+
+            # Ensure custom packages path is available for the subprocess
+            env = None
+            if is_frozen():
+                import os
+                custom_dir = get_custom_packages_dir()
+                env = os.environ.copy()
+                pythonpath = env.get('PYTHONPATH', '')
+                if pythonpath:
+                    env['PYTHONPATH'] = f"{custom_dir};{pythonpath}"
+                else:
+                    env['PYTHONPATH'] = custom_dir
+
+            # Run in subprocess with timeout
+            # IMPORTANT: encoding='utf-8' is required for Vietnamese characters on Windows
+            result = subprocess.run(
+                [python_exe, "-c", script],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                env=env,
+                encoding='utf-8',
+                creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
+            )
+
+            if result.returncode == 0 and result.stdout.strip():
+                try:
+                    output = json.loads(result.stdout.strip())
+                    if isinstance(output, list):
+                        logging.debug(f"Vietnamese tokenization success: {len(output)} tokens")
+                        return output
+                    elif isinstance(output, dict) and "error" in output:
+                        logging.warning(f"Vietnamese tokenization Python error: {output['error']}")
+                except json.JSONDecodeError:
+                    logging.warning(f"Vietnamese tokenization invalid JSON output: {result.stdout[:100]}")
+            else:
+                # Non-zero return code = crash (SIGILL, segfault, etc.)
+                logging.warning(
+                    f"Vietnamese tokenization subprocess failed (code {result.returncode}). "
+                    f"stderr: {result.stderr[:200] if result.stderr else 'none'}"
+                )
+                # Cache the failure - update tokenizer cache to avoid repeated subprocess calls
+                self._vietnamese_subprocess_failed = True
+                self._tokenizers["Vietnamese"] = self._simple_tokenize
+
+        except subprocess.TimeoutExpired:
+            logging.warning("Vietnamese tokenization subprocess timed out")
+            self._vietnamese_subprocess_failed = True
+            self._tokenizers["Vietnamese"] = self._simple_tokenize
+        except Exception as e:
+            logging.warning(f"Vietnamese tokenization subprocess error: {e}")
+            self._vietnamese_subprocess_failed = True
+            self._tokenizers["Vietnamese"] = self._simple_tokenize
+
+        # Fallback to simple tokenization
+        return self._simple_tokenize(text)
 
     def _tokenize_with_udpipe(self, text: str, model) -> List[str]:
         """Tokenize text using UDPipe model with compound word grouping.
@@ -1454,8 +1554,18 @@ class NLPManager:
         try:
             # Specialized tokenizers for Asian languages
             if language == "Vietnamese":
-                from underthesea import word_tokenize
-                self._tokenizers[language] = lambda t: word_tokenize(t)
+                # Use subprocess isolation for Vietnamese tokenization
+                # underthesea_core 2.0.0 has CPU instruction issues (SIGILL) on some machines
+                # Subprocess isolation protects the main app from crashes
+                # New installations will get underthesea_core==1.0.7 (pinned in packages list)
+                flag_value = getattr(self, '_vietnamese_subprocess_failed', False)
+                logging.info(f"[LOAD_TOKENIZER] Vietnamese: _vietnamese_subprocess_failed={flag_value}")
+                if flag_value:
+                    logging.info("Vietnamese tokenization: using simple fallback (previous crash)")
+                    self._tokenizers[language] = self._simple_tokenize
+                else:
+                    logging.info("Vietnamese tokenization: using subprocess isolation")
+                    self._tokenizers[language] = self._safe_tokenize_vietnamese
 
             elif language == "Japanese":
                 import fugashi

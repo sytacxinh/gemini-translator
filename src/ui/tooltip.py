@@ -328,8 +328,7 @@ class TooltipManager:
 
         # Calculate size
         width, height = self.calculate_size(translated)
-        if is_error:
-            height = max(height, 120)
+        height = max(height, 130)  # Unified MIN_HEIGHT
 
         # Add extra height for trial mode header
         if trial_info and trial_info.get('is_trial') and not is_error:
@@ -458,15 +457,29 @@ class TooltipManager:
             close_btn_kwargs["bootstyle"] = "secondary"
         ttk.Button(btn_frame, **close_btn_kwargs).pack(side=RIGHT)
 
-        # Translation text
-        text_height = max(1, (height - 80) // 26)
+        # Translation text - USE FONT METRICS for correct sizing on all machines
         text_fg = '#ff6b6b' if is_error else '#ffffff'
+
+        # Get actual font metrics instead of hardcoding (fixes text cutoff on some machines)
+        try:
+            ui_font = font.Font(family='Segoe UI', size=11)
+            line_height = ui_font.metrics("linespace")
+            avg_char_width = ui_font.measure("m")  # 'm' is average width char
+        except tk.TclError:
+            # Fallback values if font metrics fail
+            line_height = 20
+            avg_char_width = 8
+
+        # Calculate dimensions using ACTUAL measured values (+1 extra row for visibility)
+        vertical_padding = 80  # Fixed padding for buttons + margins
+        text_height = max(2, (height - vertical_padding) // line_height + 1)
+        text_width = max(30, width // avg_char_width)
 
         self.tooltip_text = tk.Text(main_frame, wrap=tk.WORD,
                                     bg='#3d1f1f' if is_error else '#2b2b2b',
                                     fg=text_fg,
                                     font=('Segoe UI', 11), relief='flat',
-                                    width=width // 9, height=text_height,
+                                    width=text_width, height=text_height,
                                     borderwidth=0, highlightthickness=0)
         self.tooltip_text.insert('1.0', translated)
         self.tooltip_text.config(state='disabled')
@@ -648,8 +661,18 @@ class TooltipManager:
             # Auto-proceed with detected language
             self._open_dictionary_with_language(text_to_analyze, detected_lang, self._current_trial_info)
         else:
-            # Show language selection dialog
-            self._show_language_selection_dialog(text_to_analyze, detected_lang if confidence > 0.3 else None)
+            # Determine if language was detected but not installed
+            detected_but_not_installed = (
+                confidence >= CONFIDENCE_THRESHOLD and
+                detected_lang and
+                not nlp_manager.is_installed(detected_lang)
+            )
+            # Show language selection dialog with context
+            self._show_language_selection_dialog(
+                text_to_analyze,
+                detected_lang if confidence > 0.3 else None,
+                detected_but_not_installed=detected_but_not_installed
+            )
 
     def _show_nlp_required_message(self):
         """Show message that NLP pack is required with Install link."""
@@ -700,8 +723,15 @@ class TooltipManager:
         msg_popup.bind('<Escape>', lambda e: msg_popup.destroy())
         msg_popup.bind('<Return>', lambda e: open_settings_dict())
 
-    def _show_language_selection_dialog(self, text_to_analyze: str, suggested_lang: str = None):
-        """Show dialog to select source language for dictionary mode."""
+    def _show_language_selection_dialog(self, text_to_analyze: str, suggested_lang: str = None,
+                                         detected_but_not_installed: bool = False):
+        """Show dialog to select source language for dictionary mode.
+
+        Args:
+            text_to_analyze: Text to analyze
+            suggested_lang: Suggested language from detection
+            detected_but_not_installed: True if language was detected but pack not installed
+        """
         installed_languages = nlp_manager.get_installed_languages()
         if not installed_languages:
             self._show_nlp_required_message()
@@ -712,8 +742,9 @@ class TooltipManager:
         dialog.configure(bg='#2b2b2b')
         dialog.attributes('-topmost', True)
 
-        # Center on mouse position
-        w, h = 380, 300
+        # Center on mouse position - taller if showing install prompt
+        w = 400
+        h = 340 if detected_but_not_installed else 300
         x = self._last_mouse_x - w // 2
         y = self._last_mouse_y - h // 2
         dialog.geometry(f"{w}x{h}+{x}+{y}")
@@ -722,30 +753,60 @@ class TooltipManager:
         frame = ttk.Frame(dialog, padding=15)
         frame.pack(fill=BOTH, expand=True)
 
-        ttk.Label(frame, text="⚠️ Cannot detect language",
-                  font=('Segoe UI', 11, 'bold')).pack(pady=(0, 5))
-
-        # Explanation with link to Settings
-        explain_frame = ttk.Frame(frame)
-        explain_frame.pack(anchor='w', pady=(0, 8))
-        ttk.Label(explain_frame, text="The system could not find this language.",
-                  font=('Segoe UI', 9), foreground='#888888').pack(side=LEFT, anchor='w')
-        ttk.Label(explain_frame, text="Only installed language packs are shown.",
-                  font=('Segoe UI', 9), foreground='#888888').pack(side=LEFT)
-
         def open_settings_dict():
             dialog.destroy()
             if self._on_open_settings_dictionary_tab:
                 self._on_open_settings_dictionary_tab()
 
-        link_label = tk.Label(explain_frame, text="Install more →",
-                              font=('Segoe UI', 9, 'underline'), fg='#4da6ff',
-                              bg='#2b2b2b', cursor='hand2')
-        link_label.pack(side=LEFT, padx=(5, 0))
-        link_label.bind('<Button-1>', lambda e: open_settings_dict())
+        if detected_but_not_installed and suggested_lang:
+            # Case: Language detected but not installed - show prominent install option
+            ttk.Label(frame, text=f"📖 Detected: {suggested_lang}",
+                      font=('Segoe UI', 11, 'bold')).pack(pady=(0, 5))
 
-        ttk.Label(frame, text="Select source language:",
-                  font=('Segoe UI', 10)).pack(anchor='w', pady=(0, 5))
+            # Warning that pack not installed
+            warning_frame = ttk.Frame(frame)
+            warning_frame.pack(fill=X, pady=(0, 10))
+            ttk.Label(warning_frame, text=f"⚠️ {suggested_lang} language pack is not installed.",
+                      font=('Segoe UI', 10), foreground='#ffaa00').pack(anchor='w')
+
+            # Install button - prominent
+            install_frame = ttk.Frame(frame)
+            install_frame.pack(fill=X, pady=(0, 10))
+
+            install_btn_kwargs = {
+                "text": f"📥 Install {suggested_lang} Pack",
+                "command": open_settings_dict,
+                "width": 25
+            }
+            if HAS_TTKBOOTSTRAP:
+                install_btn_kwargs["bootstyle"] = "info"
+            ttk.Button(install_frame, **install_btn_kwargs).pack(pady=5)
+
+            # Separator
+            ttk.Separator(frame, orient='horizontal').pack(fill=X, pady=5)
+
+            # Alternative: select from installed
+            ttk.Label(frame, text="Or select from installed languages:",
+                      font=('Segoe UI', 10), foreground='#888888').pack(anchor='w', pady=(5, 5))
+        else:
+            # Case: Cannot detect language - show generic message
+            ttk.Label(frame, text="⚠️ Cannot detect language",
+                      font=('Segoe UI', 11, 'bold')).pack(pady=(0, 5))
+
+            # Explanation with link to Settings
+            explain_frame = ttk.Frame(frame)
+            explain_frame.pack(anchor='w', pady=(0, 8))
+            ttk.Label(explain_frame, text="Only installed language packs are shown.",
+                      font=('Segoe UI', 9), foreground='#888888').pack(side=LEFT, anchor='w')
+
+            link_label = tk.Label(explain_frame, text="Install more →",
+                                  font=('Segoe UI', 9, 'underline'), fg='#4da6ff',
+                                  bg='#2b2b2b', cursor='hand2')
+            link_label.pack(side=LEFT, padx=(5, 0))
+            link_label.bind('<Button-1>', lambda e: open_settings_dict())
+
+            ttk.Label(frame, text="Select source language:",
+                      font=('Segoe UI', 10)).pack(anchor='w', pady=(0, 5))
 
         # Combobox for language selection
         lang_var = tk.StringVar()
@@ -1006,7 +1067,7 @@ class TooltipManager:
         self.stop_dictionary_animation()
         # Calculate size based on result text
         width, height = self.calculate_size(result)
-        height = max(height, 200)  # Minimum height for dictionary results
+        height = max(height, 130) + 30  # Unified MIN_HEIGHT + title bar compensation
 
         # Create SEPARATE dictionary result window
         dict_result = tk.Toplevel(self.root)
