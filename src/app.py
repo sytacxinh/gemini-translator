@@ -2472,6 +2472,19 @@ IMPORTANT: Translate ALL text to {self.selected_language}. Process ALL files. Ex
         tray_thread = threading.Thread(target=run_tray_safe, daemon=True)
         tray_thread.start()
 
+        # Pre-warm NLP manager in background (non-blocking)
+        # This populates cache so Dictionary tab opens instantly
+        def prewarm_nlp():
+            try:
+                from src.core.nlp_manager import nlp_manager
+                languages = nlp_manager.get_installed_languages()
+                logging.info(f"NLP pre-warming complete: {len(languages)} languages cached")
+            except Exception as e:
+                logging.debug(f"NLP prewarm failed (non-critical): {e}")
+
+        prewarm_thread = threading.Thread(target=prewarm_nlp, daemon=True, name="NLPPrewarm")
+        prewarm_thread.start()
+
         # Note: Update check is already triggered in __init__ via _startup_update_check()
 
         # Run one-time startup API check (temporarily disabled)

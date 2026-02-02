@@ -61,12 +61,10 @@ class DictionaryTabMixin:
             logging.warning(f"Failed to set nlp_manager config: {e}")
             # Continue - this is not fatal
 
-        # Clear installed cache to ensure fresh check (fix for UDPipe model detection)
-        try:
-            nlp_manager._installed_cache.clear()
-        except Exception as e:
-            logging.warning(f"Failed to clear installed cache: {e}")
-            # Continue - this is not fatal
+        # NOTE: Don't clear cache here - it defeats pre-warming optimization.
+        # Cache is cleared only after install/uninstall operations in:
+        # - _on_install_complete() and _on_bulk_install_complete()
+        # - _on_bulk_delete_complete() and uninstall handlers
 
         # Store references
         self.nlp_pack_rows = {}

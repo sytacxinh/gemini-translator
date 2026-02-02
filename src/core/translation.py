@@ -19,6 +19,27 @@ from src.core.quota_manager import QuotaManager
 from src.core.trial_api import TrialAPIClient, TrialAPIError
 from config import Config
 
+# Punctuation that indicates text is a sentence (not a dictionary query)
+# Includes English and Japanese keyboard characters
+# NOTE: Hyphen (-), apostrophe ('), underscore (_) are NOT included
+# because they can appear in single words like "self-aware", "don't"
+SENTENCE_PUNCTUATION = (
+    # Sentence endings
+    '.!?…。！？'
+    # Clause separators
+    ';:,；：、'
+    # Brackets (English)
+    '()[]{}<>'
+    # Brackets (Japanese)
+    '（）「」『』【】〈〉《》'
+    # Quotes
+    '""\'\'""'''
+    # Other symbols
+    '/\\@#&+=|~'
+    # Japanese equivalents
+    '／＼＠＃＆＋＝｜〜・'
+)
+
 
 class TranslationService:
     """Handles all translation-related operations."""
@@ -115,8 +136,8 @@ class TranslationService:
         which don't use spaces between words.
         """
         # Check for sentence punctuation first (quick exit)
-        # Include both Western and CJK punctuation
-        if any(c in text for c in '.!?;:。！？；：'):
+        # Uses comprehensive list from SENTENCE_PUNCTUATION constant
+        if any(c in text for c in SENTENCE_PUNCTUATION):
             return False
 
         text = text.strip()
@@ -135,7 +156,7 @@ class TranslationService:
             if confidence >= 0.6 and nlp_manager.is_installed(detected_lang):
                 tokens = nlp_manager.tokenize(text, detected_lang)
                 # Filter out empty tokens and punctuation-only tokens
-                tokens = [t for t in tokens if t.strip() and not all(c in '。、！？；：,.!?;:()（）「」『』【】' for c in t)]
+                tokens = [t for t in tokens if t.strip() and not all(c in SENTENCE_PUNCTUATION for c in t)]
                 return 1 <= len(tokens) <= 4
         except Exception:
             pass  # Fallback to simple split

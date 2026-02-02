@@ -1,6 +1,7 @@
 """
 Main Settings Window - Composes all tab mixins into the final SettingsWindow class.
 """
+import logging
 import tkinter as tk
 from tkinter import BOTH, X, RIGHT
 
@@ -58,6 +59,16 @@ class SettingsWindow(
         self.recording_language = None
         self.updater = AutoUpdater()
 
+        # Lazy loading: Track which tabs have been loaded
+        self._tab_loaded = {
+            'general': False,
+            'hotkeys': False,
+            'api': False,
+            'dictionary': False,
+            'guide': False
+        }
+        self._tab_frames = {}  # Store frame references
+
         # Use tk.Toplevel for better compatibility
         self.window = tk.Toplevel(parent)
         self.window.title("Settings - CrossTrans")
@@ -86,40 +97,41 @@ class SettingsWindow(
             traceback.print_exc()
 
     def _create_widgets(self):
-        """Create settings UI with all tabs."""
+        """Create settings UI with lazy-loaded tabs for fast startup."""
         if HAS_TTKBOOTSTRAP:
             notebook = ttk.Notebook(self.window, bootstyle="dark")
         else:
             notebook = ttk.Notebook(self.window)
         notebook.pack(fill=BOTH, expand=True, padx=10, pady=10)
-
-        # Tab 1: General (moved to first position)
-        general_frame = ttk.Frame(notebook, padding=20) if HAS_TTKBOOTSTRAP else ttk.Frame(notebook)
-        notebook.add(general_frame, text="  General  ")
-        self._create_general_tab(general_frame)
-
-        # Tab 2: Hotkeys
-        hotkey_frame = ttk.Frame(notebook, padding=20) if HAS_TTKBOOTSTRAP else ttk.Frame(notebook)
-        notebook.add(hotkey_frame, text="  Hotkeys  ")
-        self._create_hotkey_tab(hotkey_frame)
-
-        # Tab 3: API Key
-        api_frame = ttk.Frame(notebook, padding=20) if HAS_TTKBOOTSTRAP else ttk.Frame(notebook)
-        notebook.add(api_frame, text="  API Key  ")
-        self._create_api_tab(api_frame)
-
-        # Tab 4: Dictionary (NLP Language Packs)
-        dict_frame = ttk.Frame(notebook, padding=20) if HAS_TTKBOOTSTRAP else ttk.Frame(notebook)
-        notebook.add(dict_frame, text="  Dictionary  ")
-        self._create_dictionary_tab(dict_frame)
-
-        # Store notebook reference for opening specific tabs
         self.notebook = notebook
 
-        # Tab 5: Guide
-        guide_frame = ttk.Frame(notebook, padding=20) if HAS_TTKBOOTSTRAP else ttk.Frame(notebook)
-        notebook.add(guide_frame, text="  Guide  ")
-        self._create_guide_tab(guide_frame)
+        # Create all 5 empty frames immediately (fast)
+        tab_configs = [
+            ('general', "  General  "),
+            ('hotkeys', "  Hotkeys  "),
+            ('api', "  API Key  "),
+            ('dictionary', "  Dictionary  "),
+            ('guide', "  Guide  ")
+        ]
+
+        for tab_name, tab_text in tab_configs:
+            frame = ttk.Frame(notebook, padding=20) if HAS_TTKBOOTSTRAP else ttk.Frame(notebook)
+            notebook.add(frame, text=tab_text)
+            self._tab_frames[tab_name] = frame
+
+        # Load General and Hotkeys immediately (they're fast, ~50ms each)
+        self._create_general_tab(self._tab_frames['general'])
+        self._tab_loaded['general'] = True
+
+        self._create_hotkey_tab(self._tab_frames['hotkeys'])
+        self._tab_loaded['hotkeys'] = True
+
+        # Show placeholders for heavy tabs (API, Dictionary, Guide)
+        for tab_name in ['api', 'dictionary', 'guide']:
+            self._create_tab_placeholder(self._tab_frames[tab_name])
+
+        # Bind tab change event for lazy loading
+        notebook.bind('<<NotebookTabChanged>>', self._on_tab_changed)
 
         # Close button only (auto-save handles all saves)
         btn_frame = ttk.Frame(self.window)
@@ -131,3 +143,49 @@ class SettingsWindow(
         else:
             ttk.Button(btn_frame, text="Close", command=self.window.destroy,
                        width=15).pack(side=RIGHT)
+
+    def _create_tab_placeholder(self, parent):
+        """Show loading indicator in unloaded tab."""
+        placeholder = ttk.Frame(parent)
+        placeholder.pack(expand=True)
+        ttk.Label(placeholder, text="Loading...",
+                  font=('Segoe UI', 11)).pack()
+        parent._placeholder = placeholder
+
+    def _on_tab_changed(self, event):
+        """Load tab content on first access (lazy loading)."""
+        try:
+            tab_id = self.notebook.select()
+            tab_index = self.notebook.index(tab_id)
+
+            tab_map = {
+                0: ('general', self._create_general_tab),
+                1: ('hotkeys', self._create_hotkey_tab),
+                2: ('api', self._create_api_tab),
+                3: ('dictionary', self._create_dictionary_tab),
+                4: ('guide', self._create_guide_tab)
+            }
+
+            tab_name, create_func = tab_map.get(tab_index, (None, None))
+
+            if tab_name and not self._tab_loaded.get(tab_name):
+                frame = self._tab_frames[tab_name]
+
+                # Clear placeholder
+                if hasattr(frame, '_placeholder'):
+                    frame._placeholder.destroy()
+                    delattr(frame, '_placeholder')
+
+                # Load content
+                try:
+                    create_func(frame)
+                    self._tab_loaded[tab_name] = True
+                    logging.debug(f"Lazy loaded {tab_name} tab")
+                except Exception as e:
+                    logging.error(f"Failed to load {tab_name} tab: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    ttk.Label(frame, text=f"Error loading tab: {e}",
+                             foreground='#ff6b6b').pack()
+        except Exception as e:
+            logging.error(f"Tab change handler error: {e}")
