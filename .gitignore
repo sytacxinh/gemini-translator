@@ -57,6 +57,7 @@ backup/
 
 # Claude Code settings
 .claude/
+.CLAUDE.md
 
 # Local development scripts (not needed for users)
 restart.bat

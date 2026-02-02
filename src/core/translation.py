@@ -254,8 +254,8 @@ Rules (DO NOT include these in your response):
 
 ## [Word]
 
-1. **Source Language**: detected language
-2. **Translation**: actual {target_language} translation (REQUIRED)
+1. **Translation**: actual {target_language} translation (REQUIRED)
+2. **Source Language**: detected language
 3. **Definition**: explanation in {target_language} (REQUIRED)
 4. **Word Type**: noun/verb/adjective/adverb/etc.
 5. **Pronunciation**: /IPA/, /{target_language} phonetic/
@@ -266,7 +266,7 @@ Rules (DO NOT include these in your response):
 ---
 
 **CRITICAL**:
-- ALWAYS start each entry with ## [Word] header (for highlighting)
+- ALWAYS start each entry with ## [Word] header (for me highlighting it later)
 - FILL IN all fields - never leave blank after colon
 - Examples must be in source language (same as input word)
 - All translations must be in {target_language}

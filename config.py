@@ -59,7 +59,9 @@ class Config:
         "nlp_installed": [],  # List of installed language names (e.g., ["Vietnamese", "English"])
         # Trial mode settings
         "trial_mode_forced": False,  # User manually enabled trial mode
-        "trial_last_api_check": ""   # ISO datetime of last API check
+        "trial_last_api_check": "",  # ISO datetime of last API check
+        # Version tracking for cache clearing
+        "last_run_version": None,  # Track version to detect upgrades
     }
 
     def __init__(self):
@@ -554,6 +556,16 @@ class Config:
         except Exception as e:
             # Don't let telemetry errors break the app
             logging.warning(f"Failed to record update check telemetry: {e}")
+
+    # Version tracking for cache clearing on upgrade
+    def get_last_run_version(self) -> Optional[str]:
+        """Get the version from last app run."""
+        return self._config.get('last_run_version')
+
+    def set_last_run_version(self, version: str):
+        """Set the last run version."""
+        self._config['last_run_version'] = version
+        self.save()
 
     # Generic getter/setter
     def get(self, key: str, default: Any = None) -> Any:

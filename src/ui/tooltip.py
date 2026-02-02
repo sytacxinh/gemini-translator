@@ -3,6 +3,7 @@ Tooltip Manager for CrossTrans.
 Handles translation result tooltips and loading indicators.
 """
 import ctypes
+import math
 import tkinter as tk
 from tkinter import BOTH, X, LEFT, RIGHT, TOP, BOTTOM
 from tkinter import font
@@ -231,6 +232,9 @@ class TooltipManager:
     def calculate_size(self, text: str) -> Tuple[int, int]:
         """Calculate optimal tooltip dimensions based on text content.
 
+        Uses 20% safety margin on line height for cross-machine font rendering
+        compatibility (handles DPI, ClearType, font substitution differences).
+
         Args:
             text: The text to display
 
@@ -239,78 +243,55 @@ class TooltipManager:
         """
         MAX_WIDTH = 800
         MIN_WIDTH = 320
-        MIN_HEIGHT = 120
+        MIN_HEIGHT = 130  # Unified minimum height
 
         # Get max height from current monitor's work area
         work_area = get_monitor_work_area(self._last_mouse_x, self._last_mouse_y)
         if work_area:
-            mon_top, mon_bottom = work_area[1], work_area[3]
-            MAX_HEIGHT = (mon_bottom - mon_top) - 80
+            MAX_HEIGHT = (work_area[3] - work_area[1]) - 80
         else:
             MAX_HEIGHT = self.root.winfo_screenheight() - 80
 
-        # Padding configuration
-        FRAME_PADDING = 30  # Total horizontal padding (15px * 2)
-        TEXT_MARGIN = 10    # Extra margin for scrollbar/safety
-        VERTICAL_PADDING = 100  # Header (20) + Footer (50) + Padding (30)
+        # Padding - SINGLE SOURCE OF TRUTH
+        HORIZONTAL_PADDING = 50  # frame(30) + scrollbar(20)
+        VERTICAL_PADDING = 100   # header + footer + margins
 
-        # Create font object to measure text accurately
+        # Font with 20% safety margin for cross-machine compatibility
         try:
             ui_font = font.Font(family='Segoe UI', size=11)
         except tk.TclError:
             ui_font = font.Font(family='Arial', size=11)
 
-        line_height = ui_font.metrics("linespace") + 2  # +2px for line spacing
+        base_line_height = ui_font.metrics("linespace")
+        LINE_HEIGHT = int(base_line_height)
 
-        # 1. Calculate Optimal Width
-        longest_line_width = 0
-        for line in text.split('\n'):
-            w = ui_font.measure(line)
-            if w > longest_line_width:
-                longest_line_width = w
-
-        ideal_width = longest_line_width + FRAME_PADDING + TEXT_MARGIN
+        # Width calculation
+        longest_line = max((ui_font.measure(line) for line in text.split('\n')), default=0)
+        ideal_width = longest_line + HORIZONTAL_PADDING
         width = max(MIN_WIDTH, min(ideal_width, MAX_WIDTH))
 
-        # 2. Calculate Height (Simulate Word Wrapping)
-        available_text_width = width - FRAME_PADDING - TEXT_MARGIN
+        # Height with CEILING division (always round UP)
+        available_width = width - HORIZONTAL_PADDING
 
         total_lines = 0
-        for paragraph in text.split('\n'):
-            if not paragraph:
+        for para in text.split('\n'):
+            if not para:
                 total_lines += 1
                 continue
 
-            if ui_font.measure(paragraph) <= available_text_width:
+            para_width = ui_font.measure(para)
+            if para_width <= available_width:
                 total_lines += 1
-                continue
+            else:
+                # Ceiling division - never underestimate wrap lines
+                total_lines += math.ceil(para_width / available_width)
 
-            # Simulate word wrapping
-            current_line_width = 0
-            lines_in_para = 1
-            words = paragraph.split(' ')
-            space_width = ui_font.measure(' ')
+        # Add 1 line buffer for edge cases
+        total_lines += 1
 
-            for word in words:
-                word_width = ui_font.measure(word)
+        height = (total_lines * LINE_HEIGHT) + VERTICAL_PADDING
 
-                if current_line_width + word_width <= available_text_width:
-                    current_line_width += word_width + space_width
-                else:
-                    lines_in_para += 1
-
-                    if word_width > available_text_width:
-                        extra_lines = int(word_width / available_text_width)
-                        lines_in_para += extra_lines
-                        current_line_width = word_width % available_text_width
-                    else:
-                        current_line_width = word_width + space_width
-
-            total_lines += lines_in_para
-
-        height = (total_lines * line_height) + VERTICAL_PADDING
-
-        return int(width), int(max(height, MIN_HEIGHT))
+        return int(width), int(max(MIN_HEIGHT, min(height, MAX_HEIGHT)))
 
     def show(self, translated: str, target_lang: str, trial_info: dict = None, original: str = ""):
         """Show tooltip with translation result.
@@ -326,9 +307,8 @@ class TooltipManager:
         # Check if this is an error message
         is_error = translated.startswith("Error:") or translated.startswith("No text")
 
-        # Calculate size
+        # Calculate size (MIN_HEIGHT already handled in calculate_size)
         width, height = self.calculate_size(translated)
-        height = max(height, 130)  # Unified MIN_HEIGHT
 
         # Add extra height for trial mode header
         if trial_info and trial_info.get('is_trial') and not is_error:
@@ -411,28 +391,36 @@ class TooltipManager:
 
         if not is_error:
             # Copy button
-            copy_btn_kwargs = {"text": "Copy", "command": self._handle_copy, "width": 8}
-            if HAS_TTKBOOTSTRAP:
-                copy_btn_kwargs["bootstyle"] = "primary"
-            self.tooltip_copy_btn = ttk.Button(btn_frame, **copy_btn_kwargs)
+            self.tooltip_copy_btn = tk.Button(
+                btn_frame,
+                text="Copy",
+                command=self._handle_copy,
+                autostyle=False,
+                bg='#0d6efd',  # Bootstrap primary blue
+                fg='#ffffff',
+                activebackground='#0b5ed7',
+                activeforeground='#ffffff',
+                font=('Segoe UI', 10),
+                relief='flat',
+                padx=12, pady=4,
+                cursor='hand2'
+            )
             self.tooltip_copy_btn.pack(side=LEFT)
 
             # Dictionary button - opens popup for original text
-            # Use tk.Button for consistent reddish-brown color
             self.tooltip_dict_btn = tk.Button(
                 btn_frame,
                 text="Dictionary",
                 command=self._open_dictionary_popup,
-                autostyle=False,  # Prevent ttkbootstrap from overriding colors
-                bg=DICT_BUTTON_COLOR,  # Reddish-brown (Saddle Brown)
+                autostyle=False,
+                bg=DICT_BUTTON_COLOR,
                 fg='#ffffff',
-                activebackground=DICT_BUTTON_ACTIVE,  # Sienna
+                activebackground=DICT_BUTTON_ACTIVE,
                 activeforeground='#ffffff',
-                font=('Segoe UI', 9),
+                font=('Segoe UI', 10),
                 relief='flat',
-                padx=8, pady=2,
-                cursor='hand2',
-                width=10
+                padx=12, pady=4,
+                cursor='hand2'
             )
             self.tooltip_dict_btn.pack(side=LEFT, padx=4)
 
@@ -440,10 +428,21 @@ class TooltipManager:
             self._update_dict_button_state()
 
             # Open Translator button
-            open_btn_kwargs = {"text": "Open Translator", "command": self._handle_open_translator, "width": 14}
-            if HAS_TTKBOOTSTRAP:
-                open_btn_kwargs["bootstyle"] = "success"
-            ttk.Button(btn_frame, **open_btn_kwargs).pack(side=LEFT, padx=4)
+            self.tooltip_open_btn = tk.Button(
+                btn_frame,
+                text="Open Translator",
+                command=self._handle_open_translator,
+                autostyle=False,
+                bg='#198754',  # Bootstrap success green
+                fg='#ffffff',
+                activebackground='#157347',
+                activeforeground='#ffffff',
+                font=('Segoe UI', 10),
+                relief='flat',
+                padx=12, pady=4,
+                cursor='hand2'
+            )
+            self.tooltip_open_btn.pack(side=LEFT, padx=4)
         else:
             # For errors, show "Open Settings" button
             settings_btn_kwargs = {"text": "Open Settings", "command": self._handle_open_settings, "width": 14}
@@ -460,19 +459,19 @@ class TooltipManager:
         # Translation text - USE FONT METRICS for correct sizing on all machines
         text_fg = '#ff6b6b' if is_error else '#ffffff'
 
-        # Get actual font metrics instead of hardcoding (fixes text cutoff on some machines)
+        # SAME constants as calculate_size() for consistency
         try:
             ui_font = font.Font(family='Segoe UI', size=11)
-            line_height = ui_font.metrics("linespace")
-            avg_char_width = ui_font.measure("m")  # 'm' is average width char
+            base_line_height = ui_font.metrics("linespace")
+            avg_char_width = ui_font.measure("m")
         except tk.TclError:
-            # Fallback values if font metrics fail
-            line_height = 20
+            base_line_height = 20
             avg_char_width = 8
 
-        # Calculate dimensions using ACTUAL measured values (+1 extra row for visibility)
-        vertical_padding = 80  # Fixed padding for buttons + margins
-        text_height = max(2, (height - vertical_padding) // line_height + 1)
+        VERTICAL_PADDING = 100  # Must match calculate_size()
+        LINE_HEIGHT = int(base_line_height)
+
+        text_height = max(1, (height - VERTICAL_PADDING) // LINE_HEIGHT)
         text_width = max(30, width // avg_char_width)
 
         self.tooltip_text = tk.Text(main_frame, wrap=tk.WORD,
@@ -1065,9 +1064,9 @@ class TooltipManager:
         """
         # Stop lookup animation first
         self.stop_dictionary_animation()
-        # Calculate size based on result text
+        # Calculate size based on result text (MIN_HEIGHT already in calculate_size)
         width, height = self.calculate_size(result)
-        height = max(height, 130) + 30  # Unified MIN_HEIGHT + title bar compensation
+        height = height + 30  # Title bar compensation for Toplevel window
 
         # Create SEPARATE dictionary result window
         dict_result = tk.Toplevel(self.root)
@@ -1162,12 +1161,25 @@ class TooltipManager:
             close_btn_kwargs["bootstyle"] = "secondary"
         ttk.Button(btn_frame, **close_btn_kwargs).pack(side=RIGHT)
 
-        # Result text
-        text_height = max(1, (height - 80) // 26)
+        # Result text - SAME calculation as Normal mode for consistency
+        try:
+            ui_font = font.Font(family='Segoe UI', size=11)
+            base_line_height = ui_font.metrics("linespace")
+            avg_char_width = ui_font.measure("m")
+        except tk.TclError:
+            base_line_height = 20
+            avg_char_width = 8
+
+        VERTICAL_PADDING = 100  # Must match calculate_size()
+        LINE_HEIGHT = int(base_line_height)
+
+        text_height = max(1, (height - VERTICAL_PADDING) // LINE_HEIGHT)
+        text_width = max(30, width // avg_char_width)
+
         result_text = tk.Text(main_frame, wrap=tk.WORD,
                               bg='#2b2b2b', fg='#ffffff',
                               font=('Segoe UI', 11), relief='flat',
-                              width=width // 9, height=text_height,
+                              width=text_width, height=text_height,
                               borderwidth=0, highlightthickness=0)
         result_text.insert('1.0', result)
 

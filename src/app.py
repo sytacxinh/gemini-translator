@@ -146,6 +146,13 @@ class TranslatorApp:
         # Initialize configuration
         self.config = Config()
 
+        # Check for version upgrade and clear cache if needed
+        if self._check_version_upgrade():
+            return  # App will restart after cache clear
+
+        # Check for update status from previous run (success/failure)
+        self._check_update_status()
+
         # Log DnD library availability
         logging.info(f"DnD libraries: tkinterdnd2={HAS_DND}, windnd={HAS_WINDND}")
 
@@ -226,6 +233,245 @@ class TranslatorApp:
 
         # Schedule daily API key re-check if trial mode is forced
         self._schedule_trial_recheck()
+
+        # Show any pending update dialogs (success/failure from previous update)
+        self._show_pending_update_dialogs()
+
+    def _check_version_upgrade(self) -> bool:
+        """Check if app version changed since last run and clear cache if needed.
+
+        Returns:
+            True if app will restart (caller should return early)
+            False if no restart needed
+        """
+        from src.constants import VERSION
+
+        last_version = self.config.get_last_run_version()
+
+        if last_version and last_version != VERSION:
+            logging.info(f"Version upgrade detected: {last_version} -> {VERSION}")
+            self._clear_caches_and_restart()
+            return True
+
+        # Update stored version (first run or same version)
+        if last_version != VERSION:
+            self.config.set_last_run_version(VERSION)
+
+        return False
+
+    def _clear_caches_and_restart(self):
+        """Clear Python caches and restart app after version upgrade."""
+        import shutil
+        import sys
+        import os
+
+        from src.constants import VERSION
+
+        logging.info("Clearing caches after version upgrade...")
+
+        # Get base directory (where src folder is)
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+
+        # List of __pycache__ directories to clear
+        cache_dirs = [
+            os.path.join(base_dir, '__pycache__'),
+            os.path.join(base_dir, 'core', '__pycache__'),
+            os.path.join(base_dir, 'ui', '__pycache__'),
+            os.path.join(base_dir, 'ui', 'settings', '__pycache__'),
+            os.path.join(base_dir, 'utils', '__pycache__'),
+            os.path.join(base_dir, 'assets', '__pycache__'),
+        ]
+
+        cleared_count = 0
+        for cache_dir in cache_dirs:
+            if os.path.exists(cache_dir):
+                try:
+                    shutil.rmtree(cache_dir)
+                    logging.info(f"Cleared cache: {cache_dir}")
+                    cleared_count += 1
+                except Exception as e:
+                    logging.warning(f"Failed to clear {cache_dir}: {e}")
+
+        logging.info(f"Cleared {cleared_count} cache directories")
+
+        # Update version in config before restart
+        self.config.set_last_run_version(VERSION)
+
+        # Restart app
+        logging.info("Restarting app after cache clear...")
+        python = sys.executable
+        os.execl(python, python, *sys.argv)
+
+    def _check_update_status(self) -> None:
+        """Check if previous update succeeded or failed.
+
+        Reads status files created by the update batch script:
+        - crosstrans_update_error.txt: Update failed, shows error dialog
+        - crosstrans_update_success.txt: Update completed
+        - crosstrans_update_expected.txt: Expected version number
+        - crosstrans_update_pending.txt: Path to pending update file (for reboot fallback)
+
+        Shows appropriate feedback to user and offers MoveFileEx fallback if update failed.
+        """
+        temp = os.environ.get('TEMP', os.environ.get('TMP', ''))
+        if not temp:
+            return
+
+        error_file = os.path.join(temp, 'crosstrans_update_error.txt')
+        success_file = os.path.join(temp, 'crosstrans_update_success.txt')
+        expected_file = os.path.join(temp, 'crosstrans_update_expected.txt')
+        pending_file = os.path.join(temp, 'crosstrans_update_pending.txt')
+
+        status_files = [error_file, success_file, expected_file, pending_file]
+
+        try:
+            if os.path.exists(error_file):
+                # Update failed - offer reboot fallback
+                error_msg = ""
+                pending_path = None
+
+                try:
+                    with open(error_file, 'r') as f:
+                        error_msg = f.read().strip()
+                except Exception:
+                    error_msg = "Unknown error"
+
+                if os.path.exists(pending_file):
+                    try:
+                        with open(pending_file, 'r') as f:
+                            pending_path = f.read().strip()
+                    except Exception:
+                        pass
+
+                logging.warning(f"Previous update failed: {error_msg}")
+
+                # Schedule dialog to show after UI is initialized
+                self._pending_update_error = error_msg
+                self._pending_update_path = pending_path
+
+                # Cleanup status files (but keep pending for MoveFileEx if needed)
+                for f in [error_file, success_file, expected_file]:
+                    if os.path.exists(f):
+                        try:
+                            os.remove(f)
+                        except Exception:
+                            pass
+
+            elif os.path.exists(success_file):
+                # Check if version matches expected
+                expected_ver = None
+                if os.path.exists(expected_file):
+                    try:
+                        with open(expected_file, 'r') as f:
+                            expected_ver = f.read().strip()
+                    except Exception:
+                        pass
+
+                if expected_ver:
+                    if VERSION == expected_ver:
+                        # Success! Schedule toast after UI initialized
+                        logging.info(f"Update to v{expected_ver} successful!")
+                        self._pending_update_success_version = expected_ver
+                    else:
+                        # Version mismatch - update failed silently
+                        logging.error(f"Update verification failed: Expected v{expected_ver} but running v{VERSION}")
+                        self._pending_update_error = f"Expected v{expected_ver} but running v{VERSION}"
+                        self._pending_update_path = None
+
+                # Cleanup all status files
+                for f in status_files:
+                    if os.path.exists(f):
+                        try:
+                            os.remove(f)
+                        except Exception:
+                            pass
+
+        except Exception as e:
+            logging.warning(f"Error checking update status: {e}")
+
+    def _show_pending_update_dialogs(self) -> None:
+        """Show any pending update dialogs after main window is ready.
+
+        Called after the main UI components are initialized.
+        """
+        # Show update success toast
+        if hasattr(self, '_pending_update_success_version'):
+            version = self._pending_update_success_version
+            del self._pending_update_success_version
+            self.root.after(2000, lambda: self._show_update_success_toast(version))
+
+        # Show update failed dialog
+        if hasattr(self, '_pending_update_error'):
+            error_msg = self._pending_update_error
+            pending_path = getattr(self, '_pending_update_path', None)
+            del self._pending_update_error
+            if hasattr(self, '_pending_update_path'):
+                del self._pending_update_path
+            self.root.after(1000, lambda: self._show_update_failed_dialog(error_msg, pending_path))
+
+    def _show_update_success_toast(self, version: str) -> None:
+        """Show success toast after update.
+
+        Args:
+            version: The version that was successfully installed
+        """
+        self.toast.show(
+            "Update Successful",
+            f"CrossTrans has been updated to v{version}",
+            duration=5000
+        )
+
+    def _show_update_failed_dialog(self, error_msg: str, pending_path: str = None) -> None:
+        """Show dialog when update failed, offering reboot fallback.
+
+        Args:
+            error_msg: Error message from the failed update
+            pending_path: Path to the pending update file (for MoveFileEx fallback)
+        """
+        from src.ui.dialogs import UpdateFailedDialog
+
+        dialog = UpdateFailedDialog(
+            self.root,
+            error_msg,
+            pending_path,
+            current_exe=sys.executable
+        )
+
+        if dialog.result == 'reboot' and pending_path:
+            # User chose to schedule update for reboot
+            from src.utils.updates import AutoUpdater
+            updater = AutoUpdater()
+            result = updater.schedule_update_on_reboot(pending_path, sys.executable)
+
+            if result['success']:
+                self.toast.show(
+                    "Update Scheduled",
+                    "Update will be applied when you restart Windows.",
+                    duration=5000
+                )
+                # Clean up pending file marker
+                pending_file = os.path.join(
+                    os.environ.get('TEMP', ''),
+                    'crosstrans_update_pending.txt'
+                )
+                if os.path.exists(pending_file):
+                    try:
+                        os.remove(pending_file)
+                    except Exception:
+                        pass
+            else:
+                self.toast.show(
+                    "Scheduling Failed",
+                    result.get('message', 'Could not schedule update'),
+                    duration=5000,
+                    toast_type=ToastType.ERROR
+                )
+
+        elif dialog.result == 'manual':
+            # Open GitHub releases page
+            import webbrowser
+            from src.constants import GITHUB_REPO
+            webbrowser.open(f"https://github.com/{GITHUB_REPO}/releases/latest")
 
     def _schedule_trial_recheck(self):
         """Schedule re-check of API keys when in forced trial mode."""

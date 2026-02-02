@@ -453,6 +453,13 @@ class AutoUpdater:
     def install_and_restart(self) -> dict:
         """Install the update and restart app with comprehensive error handling.
 
+        Enhanced with:
+        - 30-second timeout for process exit
+        - 5 retry attempts for file operations
+        - File size verification after copy
+        - Status files for startup verification
+        - Pending file path for MoveFileEx fallback
+
         Returns:
             dict with keys:
             - success: bool
@@ -467,67 +474,144 @@ class AutoUpdater:
             temp_dir = os.path.dirname(self.download_path)
             logging.info(f"Installing update from: {self.download_path}")
             logging.info(f"Current EXE: {current_exe}")
+            logging.info(f"Target version: {self.latest_version}")
 
-            # Create enhanced update batch script with logging and rollback
+            # Create enhanced update batch script with timeout, retries, and verification
             batch_path = os.path.join(temp_dir, 'update.bat')
             batch_content = f'''@echo off
 setlocal enabledelayedexpansion
 
-:: Log file
+:: Log file and status files
 set LOGFILE="%TEMP%\\crosstrans_update.log"
-echo Update started at %DATE% %TIME% > %LOGFILE%
+set ERRORFILE="%TEMP%\\crosstrans_update_error.txt"
+set SUCCESSFILE="%TEMP%\\crosstrans_update_success.txt"
+set EXPECTEDFILE="%TEMP%\\crosstrans_update_expected.txt"
+set PENDINGFILE="%TEMP%\\crosstrans_update_pending.txt"
 
-:: Wait for app to close
-echo Waiting for CrossTrans to close... >> %LOGFILE%
+:: Clean up old status files
+del /F /Q %ERRORFILE% >NUL 2>&1
+del /F /Q %SUCCESSFILE% >NUL 2>&1
+del /F /Q %EXPECTEDFILE% >NUL 2>&1
+del /F /Q %PENDINGFILE% >NUL 2>&1
+
+echo ============================================== > %LOGFILE%
+echo Update started at %DATE% %TIME% >> %LOGFILE%
+echo Target version: {self.latest_version} >> %LOGFILE%
+echo Source: {self.download_path} >> %LOGFILE%
+echo Target: {current_exe} >> %LOGFILE%
+echo ============================================== >> %LOGFILE%
+
+:: Wait for app to close with 30-second timeout
+echo Waiting for CrossTrans to close (max 30 seconds)... >> %LOGFILE%
+set /a MAX_WAIT=30
+set /a WAITED=0
+
 :wait
 tasklist /FI "PID eq %1" 2>NUL | find /I "%1" >NUL
 if not errorlevel 1 (
-    echo Still running... >> %LOGFILE%
+    if !WAITED! GEQ !MAX_WAIT! (
+        echo TIMEOUT: Process did not close within 30 seconds >> %LOGFILE%
+        echo Update failed: Application did not close in time > %ERRORFILE%
+        echo {self.download_path} > %PENDINGFILE%
+        goto launch_old
+    )
     timeout /t 1 /nobreak >NUL
+    set /a WAITED+=1
+    echo Waiting... !WAITED!/!MAX_WAIT! >> %LOGFILE%
     goto wait
 )
 
-echo Process closed >> %LOGFILE%
-timeout /t 2 /nobreak >NUL
+echo Process closed after !WAITED! seconds >> %LOGFILE%
 
-:: Backup current version
-echo Creating backup... >> %LOGFILE%
+:: Additional wait for file handle release
+echo Waiting for file handles to release... >> %LOGFILE%
+timeout /t 3 /nobreak >NUL
+
+:: Delete old backup
+echo Removing old backup if exists... >> %LOGFILE%
 del /F /Q "{current_exe}.bak" >NUL 2>&1
 
+:: Backup current version with 5 retries
+echo Creating backup (max 5 attempts)... >> %LOGFILE%
+set /a RETRY=0
+
+:backup_retry
 move /Y "{current_exe}" "{current_exe}.bak" >NUL 2>&1
 if errorlevel 1 (
-    echo ERROR: Could not backup current version >> %LOGFILE%
+    set /a RETRY+=1
+    echo Backup attempt !RETRY! failed >> %LOGFILE%
+    if !RETRY! GEQ 5 (
+        echo FATAL: Cannot backup after 5 attempts >> %LOGFILE%
+        echo Update failed: File is locked by another process > %ERRORFILE%
+        echo {self.download_path} > %PENDINGFILE%
+        goto launch_old
+    )
     timeout /t 2 /nobreak >NUL
-    move /Y "{current_exe}" "{current_exe}.bak" >NUL 2>&1
+    goto backup_retry
 )
 
 if not exist "{current_exe}.bak" (
-    echo FATAL: Backup failed >> %LOGFILE%
-    echo Update failed: Could not backup current version > "%TEMP%\\crosstrans_update_error.txt"
-    goto end
+    echo FATAL: Backup file not created >> %LOGFILE%
+    echo Update failed: Could not backup current version > %ERRORFILE%
+    echo {self.download_path} > %PENDINGFILE%
+    goto launch_old
 )
 
-echo Backup created successfully >> %LOGFILE%
+echo Backup created successfully after !RETRY! retries >> %LOGFILE%
 
-:: Copy new version
-echo Installing new version... >> %LOGFILE%
+:: Copy new version with 5 retries
+echo Installing new version (max 5 attempts)... >> %LOGFILE%
+set /a RETRY=0
+
+:copy_retry
 copy /Y "{self.download_path}" "{current_exe}" >NUL 2>&1
-
 if errorlevel 1 (
-    echo ERROR: Installation failed, restoring backup... >> %LOGFILE%
-    move /Y "{current_exe}.bak" "{current_exe}" >NUL 2>&1
-    echo Update failed: Could not install new version > "%TEMP%\\crosstrans_update_error.txt"
-    goto end
+    set /a RETRY+=1
+    echo Copy attempt !RETRY! failed >> %LOGFILE%
+    if !RETRY! GEQ 5 (
+        echo FATAL: Cannot copy new version after 5 attempts >> %LOGFILE%
+        echo Restoring backup... >> %LOGFILE%
+        move /Y "{current_exe}.bak" "{current_exe}" >NUL 2>&1
+        echo Update failed: Could not install new version > %ERRORFILE%
+        echo {self.download_path} > %PENDINGFILE%
+        goto launch_old
+    )
+    timeout /t 2 /nobreak >NUL
+    goto copy_retry
 )
 
+:: Verify the new file exists
 if not exist "{current_exe}" (
-    echo FATAL: New version not found, restoring backup... >> %LOGFILE%
+    echo FATAL: New version file not found after copy >> %LOGFILE%
+    echo Restoring backup... >> %LOGFILE%
     move /Y "{current_exe}.bak" "{current_exe}" >NUL 2>&1
-    echo Update failed: Installation incomplete > "%TEMP%\\crosstrans_update_error.txt"
-    goto end
+    echo Update failed: Installation incomplete > %ERRORFILE%
+    echo {self.download_path} > %PENDINGFILE%
+    goto launch_old
 )
 
+:: Verify file size matches source
+echo Verifying file integrity... >> %LOGFILE%
+for %%I in ("{self.download_path}") do set SOURCE_SIZE=%%~zI
+for %%I in ("{current_exe}") do set DEST_SIZE=%%~zI
+echo Source size: !SOURCE_SIZE! bytes >> %LOGFILE%
+echo Dest size: !DEST_SIZE! bytes >> %LOGFILE%
+
+if not "!SOURCE_SIZE!"=="!DEST_SIZE!" (
+    echo ERROR: File size mismatch - copy may be corrupted >> %LOGFILE%
+    echo Restoring backup... >> %LOGFILE%
+    move /Y "{current_exe}.bak" "{current_exe}" >NUL 2>&1
+    echo Update failed: File copy incomplete (size mismatch) > %ERRORFILE%
+    echo {self.download_path} > %PENDINGFILE%
+    goto launch_old
+)
+
+echo File integrity verified successfully >> %LOGFILE%
 echo Installation successful >> %LOGFILE%
+
+:: Write expected version for verification on next launch
+echo {self.latest_version}> %EXPECTEDFILE%
+echo Update completed successfully > %SUCCESSFILE%
 
 :: Start new version
 echo Starting new version... >> %LOGFILE%
@@ -535,11 +619,24 @@ start "" "{current_exe}"
 
 :: Wait and cleanup
 timeout /t 3 /nobreak >NUL
-echo Cleaning up... >> %LOGFILE%
+echo Cleaning up temp files... >> %LOGFILE%
 rmdir /S /Q "{temp_dir}" >NUL 2>&1
 
-echo Update completed successfully >> %LOGFILE%
-echo Update completed successfully > "%TEMP%\\crosstrans_update_success.txt"
+echo ============================================== >> %LOGFILE%
+echo Update completed successfully at %DATE% %TIME% >> %LOGFILE%
+echo ============================================== >> %LOGFILE%
+goto end
+
+:launch_old
+:: Launch the old version (backup was restored or never moved)
+echo Launching old version due to update failure... >> %LOGFILE%
+if exist "{current_exe}" (
+    start "" "{current_exe}"
+) else if exist "{current_exe}.bak" (
+    move /Y "{current_exe}.bak" "{current_exe}" >NUL 2>&1
+    start "" "{current_exe}"
+)
+goto end
 
 :end
 echo Cleaning up update script... >> %LOGFILE%
@@ -564,3 +661,74 @@ del /F /Q "%~f0" >NUL 2>&1
         except Exception as e:
             logging.error(f"Install failed: {e}", exc_info=True)
             return {'success': False, 'error': str(e)}
+
+    def schedule_update_on_reboot(self, source_path: str, dest_path: str) -> dict:
+        """Schedule file replacement on next Windows restart using MoveFileEx API.
+
+        This is guaranteed to work as Windows handles it at boot time before
+        any user applications start. Uses the Windows PendingFileRenameOperations
+        registry key.
+
+        Args:
+            source_path: Path to the new version EXE (in temp folder)
+            dest_path: Path to the current EXE to be replaced
+
+        Returns:
+            dict with keys:
+            - success: bool
+            - message: str (success message or error description)
+        """
+        import ctypes
+        from ctypes import wintypes
+
+        MOVEFILE_DELAY_UNTIL_REBOOT = 0x4
+        MOVEFILE_REPLACE_EXISTING = 0x1
+
+        try:
+            kernel32 = ctypes.windll.kernel32
+
+            # Set up function signature
+            kernel32.MoveFileExW.argtypes = [
+                wintypes.LPCWSTR,  # lpExistingFileName
+                wintypes.LPCWSTR,  # lpNewFileName
+                wintypes.DWORD    # dwFlags
+            ]
+            kernel32.MoveFileExW.restype = wintypes.BOOL
+
+            # First, schedule deletion of the destination on reboot
+            # This ensures the old file is removed before the new one is moved
+            logging.info(f"Scheduling deletion of {dest_path} on reboot")
+            kernel32.MoveFileExW(dest_path, None, MOVEFILE_DELAY_UNTIL_REBOOT)
+
+            # Then schedule the move from source to destination
+            logging.info(f"Scheduling move: {source_path} -> {dest_path}")
+            result = kernel32.MoveFileExW(
+                source_path,
+                dest_path,
+                MOVEFILE_DELAY_UNTIL_REBOOT | MOVEFILE_REPLACE_EXISTING
+            )
+
+            if result:
+                logging.info("MoveFileEx succeeded - update scheduled for next restart")
+                return {
+                    'success': True,
+                    'message': 'Update scheduled. The update will be applied when you restart Windows.'
+                }
+            else:
+                error_code = ctypes.get_last_error()
+                error_msg = f'MoveFileEx failed with error code {error_code}'
+                logging.error(error_msg)
+
+                # Common error codes
+                if error_code == 5:
+                    error_msg = 'Access denied. Try running as administrator.'
+                elif error_code == 2:
+                    error_msg = 'Source file not found.'
+                elif error_code == 3:
+                    error_msg = 'Path not found.'
+
+                return {'success': False, 'message': error_msg}
+
+        except Exception as e:
+            logging.error(f"schedule_update_on_reboot failed: {e}", exc_info=True)
+            return {'success': False, 'message': str(e)}

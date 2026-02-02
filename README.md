@@ -1,6 +1,6 @@
 # CrossTrans
 
-![Version](https://img.shields.io/badge/version-1.9.7-blue.svg)
+![Version](https://img.shields.io/badge/version-1.9.8-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.10+-yellow.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Platform](https://img.shields.io/badge/platform-Windows-informational.svg)
@@ -14,7 +14,7 @@ A powerful Windows desktop application for instant text translation using AI. Se
 - **Instant Translation** - Select text, press hotkey, get translation in tooltip
 - **Screenshot Translation** - Win+Alt+S to capture and translate any screen region
 - **Free Trial Mode** - 100 translations/day without API key
-- **14 AI Providers** - Google Gemini (free!), OpenAI, Claude, DeepSeek, Groq, HuggingFace, and more
+- **15 AI Providers** - Google Gemini (free!), OpenAI, Claude, DeepSeek, Groq, HuggingFace, and more
 - **File Processing** - Translate documents (.docx, .txt, .srt, .pdf) and images
 - **120+ Languages** - Comprehensive language support
 - **Custom Hotkeys** - Configure any key combination for any language
@@ -274,23 +274,20 @@ CrossTrans/
 
 ---
 
-## What's New in v1.9.7
+## What's New in v1.9.8
 
-### Screenshot Translation
-- **New hotkey** - Win+Alt+S captures screen region for OCR translation
+### Stability Improvements
+- **Trial mode auto-recheck** - Automatically re-validates API keys every 24h
+- **Version upgrade detection** - Clears cache when upgrading to new version
+
+### Code Quality
+- **Settings refactored** - Split into modular package structure for better maintainability
+
+### Previous in v1.9.7
+- **Screenshot Translation** - Win+Alt+S captures screen region for OCR translation
 - **Multi-monitor support** - Works across all connected displays
-- **Visual selection** - Semi-transparent overlay with drag selection
-- **Target language** - Configure in Settings > Hotkeys tab
-- **Open Translator integration** - Screenshot loads into Attachments
-
-### Double-click to Preview
-- **Attachment preview** - Double-click any attached file to open with system default app
-- **Tooltip hint** - "(Double-click to preview)" shown on hover
-- **Error handling** - Graceful warning if file no longer exists
-
-### Improvements
+- **Double-click to Preview** - Open attached files with system default app
 - **Auto-check updates** - Non-intrusive toast notification on startup
-- **14 AI providers** - HuggingFace included in provider list
 
 ### Previous in v1.9.6
 - Critical bug fix for Dictionary Language Pack in EXE builds
@@ -335,7 +332,7 @@ python main.py
 ```bash
 pip install pyinstaller
 pyinstaller CrossTrans.spec
-# Output: dist/CrossTrans_v1.9.7.exe
+# Output: dist/CrossTrans_v1.9.8.exe
 ```
 
 ### Running Tests

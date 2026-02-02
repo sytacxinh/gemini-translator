@@ -203,7 +203,7 @@ class GuideTabMixin:
 
         # === Section 8: Supported Providers ===
         self._create_guide_section(guide_container, "Supported AI Providers", [
-            "14 providers with 180+ models:",
+            "15 providers with 180+ models:",
             "",
             "Free Tier Available:",
             "  • Google Gemini - 1,500 req/day (Recommended)",
@@ -211,6 +211,7 @@ class GuideTabMixin:
             "  • Cerebras - High throughput",
             "  • DeepSeek - DeepSeek-R1, V3",
             "  • SambaNova - Llama 405B",
+            "  • SiliconFlow - Qwen 2.5, DeepSeek-V3",
             "  • HuggingFace - Qwen 2.5, Llama 3.x",
             "",
             "Premium Providers:",

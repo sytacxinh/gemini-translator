@@ -111,6 +111,41 @@ a = Analysis(
         'torch',
         'tensorflow',
         'keras',
+
+        # ============================================
+        # Scientific computing - not needed for translation
+        # ============================================
+        'pandas',
+        'pandas._libs',
+        'pandas.core',
+        'pandas.io',
+        'scipy',
+        'scipy.linalg',
+        'scipy.sparse',
+        'scipy.special',
+        'scipy.stats',
+        'scipy.optimize',
+        'scipy.integrate',
+        'scipy.interpolate',
+        'scipy.signal',
+        'scipy.ndimage',
+        'scipy.spatial',
+        'scipy.constants',
+        'scipy.fft',
+        'scipy._lib',
+
+        # ============================================
+        # Data / filesystem - not needed
+        # ============================================
+        'fsspec',
+        'pyarrow',
+        'numba',
+        'bottleneck',
+        'xarray',
+        'h5py',
+        'tables',
+        'openpyxl',
+        'xlrd',
     ],
     noarchive=False,
     optimize=1,  # Basic optimization

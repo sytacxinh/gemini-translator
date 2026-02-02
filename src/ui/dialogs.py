@@ -307,3 +307,148 @@ class TrialFeatureDialog:
             self.on_open_settings_tab("API Key")
         elif self.on_open_settings:
             self.on_open_settings()
+
+
+class UpdateFailedDialog:
+    """Dialog shown when auto-update fails, offering reboot fallback.
+
+    Provides options:
+    1. Schedule update for next Windows restart (MoveFileEx fallback)
+    2. Download manually from GitHub
+    3. Skip for now
+
+    The result is stored in self.result:
+    - 'reboot': User chose to schedule for restart
+    - 'manual': User wants to download manually
+    - 'cancel': User dismissed the dialog
+    """
+
+    def __init__(self, parent, error_msg: str, pending_path: str = None,
+                 current_exe: str = None):
+        """Initialize update failed dialog.
+
+        Args:
+            parent: Parent window
+            error_msg: Error message from the failed update
+            pending_path: Path to the pending update file (for MoveFileEx fallback)
+            current_exe: Path to the current executable
+        """
+        self.result = 'cancel'
+        self.pending_path = pending_path
+        self.current_exe = current_exe
+
+        self.window = tk.Toplevel(parent)
+        self.window.title("Update Failed - CrossTrans")
+        self.window.geometry("500x380")
+        self.window.resizable(False, False)
+        self.window.grab_set()
+
+        # Make modal
+        self.window.transient(parent)
+
+        # Center
+        self.window.update_idletasks()
+        x = (self.window.winfo_screenwidth() - 500) // 2
+        y = (self.window.winfo_screenheight() - 380) // 2
+        self.window.geometry(f"+{x}+{y}")
+
+        self._create_update_failed_widgets(error_msg)
+
+        # Wait for dialog to close
+        self.window.wait_window()
+
+    def _create_update_failed_widgets(self, error_msg: str):
+        """Create dialog UI for update failed."""
+        main = ttk.Frame(self.window, padding=25) if HAS_TTKBOOTSTRAP else ttk.Frame(self.window)
+        main.pack(fill=BOTH, expand=True)
+
+        # Title
+        if HAS_TTKBOOTSTRAP:
+            ttk.Label(main, text="Update Installation Failed",
+                      font=('Segoe UI', 14, 'bold'),
+                      bootstyle="warning").pack(anchor=W)
+        else:
+            ttk.Label(main, text="Update Installation Failed",
+                      font=('Segoe UI', 14, 'bold')).pack(anchor=W)
+
+        # Error message
+        error_frame = ttk.Frame(main)
+        error_frame.pack(fill=X, pady=(15, 10))
+
+        ttk.Label(error_frame, text="The update could not be installed:",
+                  font=('Segoe UI', 10)).pack(anchor=W)
+
+        # Error details
+        error_box = ttk.Frame(error_frame)
+        error_box.pack(fill=X, pady=(5, 0), padx=(10, 0))
+
+        ttk.Label(error_box, text=error_msg, font=('Consolas', 9),
+                  foreground='#ff6b6b', wraplength=440).pack(anchor=W)
+
+        # Options section
+        ttk.Label(main, text="\nChoose how to proceed:",
+                  font=('Segoe UI', 10, 'bold')).pack(anchor=W, pady=(10, 5))
+
+        options_frame = ttk.Frame(main)
+        options_frame.pack(fill=X, pady=5)
+
+        # Option selection variable
+        self.option_var = tk.StringVar(value='reboot' if self.pending_path else 'manual')
+
+        # Option 1: Schedule for restart (only if pending file exists)
+        if self.pending_path:
+            opt1_frame = ttk.Frame(options_frame)
+            opt1_frame.pack(fill=X, pady=3)
+            ttk.Radiobutton(opt1_frame, text="Schedule update for next Windows restart",
+                            variable=self.option_var, value='reboot').pack(anchor=W)
+            ttk.Label(opt1_frame, text="     (Guaranteed - Windows applies update at boot)",
+                      font=('Segoe UI', 9), foreground='#888888').pack(anchor=W)
+
+        # Option 2: Download manually
+        opt2_frame = ttk.Frame(options_frame)
+        opt2_frame.pack(fill=X, pady=3)
+        ttk.Radiobutton(opt2_frame, text="Download manually from GitHub",
+                        variable=self.option_var, value='manual').pack(anchor=W)
+        ttk.Label(opt2_frame, text="     (Opens the releases page in your browser)",
+                  font=('Segoe UI', 9), foreground='#888888').pack(anchor=W)
+
+        # Option 3: Skip
+        opt3_frame = ttk.Frame(options_frame)
+        opt3_frame.pack(fill=X, pady=3)
+        ttk.Radiobutton(opt3_frame, text="Skip for now",
+                        variable=self.option_var, value='cancel').pack(anchor=W)
+        ttk.Label(opt3_frame, text="     (You can try updating again from Settings)",
+                  font=('Segoe UI', 9), foreground='#888888').pack(anchor=W)
+
+        # Buttons
+        btn_frame = ttk.Frame(main)
+        btn_frame.pack(fill=X, pady=(20, 0))
+
+        if HAS_TTKBOOTSTRAP:
+            ttk.Button(btn_frame, text="Continue", command=self._on_update_continue,
+                       bootstyle="primary", width=15).pack(side=LEFT)
+            ttk.Button(btn_frame, text="Cancel", command=self._on_update_cancel,
+                       bootstyle="secondary", width=15).pack(side=RIGHT)
+        else:
+            ttk.Button(btn_frame, text="Continue", command=self._on_update_continue,
+                       width=15).pack(side=LEFT)
+            ttk.Button(btn_frame, text="Cancel", command=self._on_update_cancel,
+                       width=15).pack(side=RIGHT)
+
+        # Log file tip
+        tip_frame = ttk.Frame(main)
+        tip_frame.pack(fill=X, pady=(15, 0))
+        ttk.Label(tip_frame,
+                  text="Tip: Check %TEMP%\\crosstrans_update.log for details",
+                  font=('Segoe UI', 8, 'italic'),
+                  foreground='#666666').pack(anchor=W)
+
+    def _on_update_continue(self):
+        """Handle continue button click."""
+        self.result = self.option_var.get()
+        self.window.destroy()
+
+    def _on_update_cancel(self):
+        """Handle cancel button click."""
+        self.result = 'cancel'
+        self.window.destroy()
