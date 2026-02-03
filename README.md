@@ -1,6 +1,6 @@
 # CrossTrans
 
-![Version](https://img.shields.io/badge/version-1.9.8.2-blue.svg)
+![Version](https://img.shields.io/badge/version-1.9.9-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.10+-yellow.svg)
 ![License](https://img.shields.io/badge/license-AGPL%20v3-blue.svg)
 ![Platform](https://img.shields.io/badge/platform-Windows-informational.svg)
@@ -206,6 +206,7 @@ CrossTrans/
 │   ├── app.py              # Main application
 │   ├── constants.py        # Languages, providers, models
 │   ├── core/
+│   │   ├── remote_config.py # Dynamic model/provider config (Cloudflare KV)
 │   │   ├── api_manager.py  # AI provider management
 │   │   ├── translation.py  # Translation service
 │   │   ├── hotkey.py       # Global hotkey system
@@ -274,17 +275,25 @@ CrossTrans/
 
 ---
 
-## What's New in v1.9.8.2
+## What's New in v1.9.9
 
-### Dictionary Mode Improvements
-- **Hyphenated words preserved** - Words like "auto-update", "state-of-the-art" now stay as single tokens
-- **Better sentence detection** - Expanded punctuation list (55 characters) for accurate dictionary vs sentence detection
-- **Language pack info** - Guide tab updated with NLP language pack instructions
+### Dynamic Remote Model Configuration
+- **Models updated without rebuilding EXE** - Provider list, model names, and API URLs are now fetched from Cloudflare KV
+- **3-tier fallback** - Remote → Local cache (24h) → Hardcoded defaults, app never blocks on network
+- **15 AI providers, 180+ models** - Updated dynamically without app update
+
+### Auto-Update System Overhaul
+- **Versioned EXE rename** - New EXE saved as `CrossTrans_v{version}.exe`, old renamed to `.bak`
+- **Registry auto-start sync** - Auto-start path updated automatically after update
+- **First-launch retry** - Handles Windows Defender scanning delay on new EXE
 
 ### Performance (v1.9.8.1)
 - **Settings window opens instantly** - Lazy loading for heavy tabs (API, Dictionary, Guide)
 - **NLP pre-warming** - Dictionary tab loads faster on subsequent opens
-- **Cache optimization** - Fixed bug that was clearing cache on every Settings open
+
+### Dictionary Mode (v1.9.8.2)
+- **Hyphenated words preserved** - Words like "auto-update" now stay as single tokens
+- **Better sentence detection** - Expanded punctuation detection (55 characters)
 
 ### Stability (v1.9.8)
 - **Trial mode auto-recheck** - Automatically re-validates API keys every 24h
@@ -340,7 +349,7 @@ python main.py
 ```bash
 pip install pyinstaller
 pyinstaller CrossTrans.spec
-# Output: dist/CrossTrans_v1.9.8.2.exe
+# Output: dist/CrossTrans_v1.9.9.exe
 ```
 
 ### Running Tests
