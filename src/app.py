@@ -58,85 +58,13 @@ from src.utils.updates import (
 from src.core.file_processor import FileProcessor
 from src.ui.attachments import AttachmentArea
 from src.core.multimodal import MultimodalProcessor
-from src.core.nlp_manager import nlp_manager
 from src.core.screenshot import ScreenshotCapture
-
-
-def set_dark_title_bar(window):
-    """Set dark title bar for Windows 10/11 windows.
-
-    Uses Windows DWM API to enable dark mode for the title bar.
-    This makes the title bar match the dark theme of the app.
-
-    Args:
-        window: Tkinter window (Tk or Toplevel)
-    """
-    try:
-        import ctypes
-        from ctypes import wintypes
-
-        # Get window handle
-        hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
-        if not hwnd:
-            hwnd = window.winfo_id()
-
-        # DWMWA_USE_IMMERSIVE_DARK_MODE = 20 (Windows 10 build 18985+, Windows 11)
-        DWMWA_USE_IMMERSIVE_DARK_MODE = 20
-        # DWMWA_CAPTION_COLOR = 35 (Windows 11 only - custom caption color)
-        DWMWA_CAPTION_COLOR = 35
-
-        dwmapi = ctypes.windll.dwmapi
-
-        # Enable dark mode for title bar
-        value = ctypes.c_int(1)
-        dwmapi.DwmSetWindowAttribute(
-            hwnd,
-            DWMWA_USE_IMMERSIVE_DARK_MODE,
-            ctypes.byref(value),
-            ctypes.sizeof(value)
-        )
-
-        # Try to set custom caption color (Windows 11)
-        # Color format: 0x00BBGGRR (BGR, not RGB)
-        # Using dark blue-gray: #1a1a2e -> 0x002e1a1a
-        caption_color = ctypes.c_int(0x002b2b2b)  # Match app background
-        dwmapi.DwmSetWindowAttribute(
-            hwnd,
-            DWMWA_CAPTION_COLOR,
-            ctypes.byref(caption_color),
-            ctypes.sizeof(caption_color)
-        )
-
-    except Exception as e:
-        logging.debug(f"Could not set dark title bar: {e}")
-
-
-def filter_dictionary_words(words: list) -> list:
-    """Filter out punctuation, symbols, and special characters from words list.
-
-    Args:
-        words: List of words to filter
-
-    Returns:
-        Filtered list containing only valid words (at least one letter/digit)
-    """
-    if not words:
-        return []
-
-    filtered = []
-    for word in words:
-        if not word or not isinstance(word, str):
-            continue
-        # Strip leading/trailing punctuation and whitespace
-        cleaned = word.strip()
-        # Remove leading/trailing punctuation (keep internal ones like don't, e-mail)
-        cleaned = re.sub(r'^[^\w]+|[^\w]+$', '', cleaned, flags=re.UNICODE)
-        # Check if the cleaned word has at least one letter or CJK character
-        # This allows words like "日本語" but filters out pure punctuation like "-", "...", "!!!"
-        if cleaned and re.search(r'[\w\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]', cleaned, re.UNICODE):
-            filtered.append(cleaned)
-
-    return filtered
+from src.utils.ui_helpers import set_dark_title_bar, filter_dictionary_words
+from src.ui.expanded_window import ExpandedTranslationWindow
+from src.core.update_ui_manager import UpdateUIManager
+from src.core.trial_manager import TrialManager
+from src.ui.screenshot_handler import ScreenshotHandler
+from src.ui.dictionary_popup import DictionaryPopup
 
 
 class TranslatorApp:
@@ -149,9 +77,6 @@ class TranslatorApp:
         # Check for version upgrade and clear cache if needed
         if self._check_version_upgrade():
             return  # App will restart after cache clear
-
-        # Check for update status from previous run (success/failure)
-        self._check_update_status()
 
         # Fetch remote model/provider config in background
         from src.core.remote_config import get_config
@@ -197,6 +122,17 @@ class TranslatorApp:
         # Toast notification manager
         self.toast = ToastManager(self.root)
 
+        # Expanded translation window
+        self.expanded_window = ExpandedTranslationWindow(self.root, self.toast)
+
+        # Update UI manager (check previous update status)
+        self.update_manager = UpdateUIManager(self.root, self.config, self.toast)
+        self.update_manager.check_update_status()
+
+        # Trial mode manager
+        self.trial_manager = TrialManager(self.root, self.config, self.translation_service, self.toast)
+        self.trial_manager.configure_callbacks(on_show_settings_tab=self._show_settings_tab)
+
         # Screenshot capture for vision/OCR translation
         self.screenshot_capture = ScreenshotCapture(self.root)
 
@@ -208,6 +144,29 @@ class TranslatorApp:
             on_open_settings=self.show_settings,
             on_open_settings_dictionary_tab=self._show_settings_dictionary_tab,
             on_dictionary_lookup=self._on_tooltip_dictionary_lookup
+        )
+
+        # Screenshot handler
+        self.screenshot_handler = ScreenshotHandler(
+            self.root, self.config, self.translation_service,
+            self.screenshot_capture, self.toast
+        )
+        self.screenshot_handler.configure_callbacks(
+            on_show_tooltip=self.show_tooltip,
+            get_tooltip_manager=lambda: self.tooltip_manager,
+            on_show_settings_tab=self._show_settings_tab,
+            get_selected_language=lambda: self.selected_language
+        )
+
+        # Dictionary popup manager
+        self.dictionary_popup = DictionaryPopup(
+            self.root, self.config, self.translation_service,
+            self.toast, self.tooltip_manager
+        )
+        self.dictionary_popup.configure_callbacks(
+            on_show_settings_tab=self._show_settings_tab,
+            get_selected_language=lambda: self.selected_language,
+            get_popup=lambda: self.popup
         )
 
         # Tray manager
@@ -227,19 +186,15 @@ class TranslatorApp:
         self._translate_pulse_direction = 1  # 1 = brightening, -1 = dimming
         self._translate_pulse_level = 0
 
-        # Pending screenshot for "Open Translator" feature
-        self._pending_screenshot_path: str = None
-        self._screenshot_target_language: str = None
-
         # Check for updates on startup if enabled
         if self.config.get_auto_check_updates():
-            self._startup_update_check()
+            self.update_manager.startup_update_check()
 
         # Schedule daily API key re-check if trial mode is forced
-        self._schedule_trial_recheck()
+        self.trial_manager.schedule_recheck()
 
         # Show any pending update dialogs (success/failure from previous update)
-        self._show_pending_update_dialogs()
+        self.update_manager.show_pending_dialogs()
 
     def _check_version_upgrade(self) -> bool:
         """Check if app version changed since last run and clear cache if needed.
@@ -306,285 +261,6 @@ class TranslatorApp:
         python = sys.executable
         os.execl(python, python, *sys.argv)
 
-    def _check_update_status(self) -> None:
-        """Check if previous update succeeded or failed.
-
-        Reads status files created by the update batch script:
-        - crosstrans_update_error.txt: Update failed, shows error dialog
-        - crosstrans_update_success.txt: Update completed
-        - crosstrans_update_expected.txt: Expected version number
-        - crosstrans_update_pending.txt: Path to pending update file (for reboot fallback)
-
-        Shows appropriate feedback to user and offers MoveFileEx fallback if update failed.
-        """
-        temp = os.environ.get('TEMP', os.environ.get('TMP', ''))
-        if not temp:
-            return
-
-        error_file = os.path.join(temp, 'crosstrans_update_error.txt')
-        success_file = os.path.join(temp, 'crosstrans_update_success.txt')
-        expected_file = os.path.join(temp, 'crosstrans_update_expected.txt')
-        pending_file = os.path.join(temp, 'crosstrans_update_pending.txt')
-
-        status_files = [error_file, success_file, expected_file, pending_file]
-
-        try:
-            if os.path.exists(error_file):
-                # Update failed - offer reboot fallback
-                error_msg = ""
-                pending_path = None
-
-                try:
-                    with open(error_file, 'r') as f:
-                        error_msg = f.read().strip()
-                except Exception:
-                    error_msg = "Unknown error"
-
-                if os.path.exists(pending_file):
-                    try:
-                        with open(pending_file, 'r') as f:
-                            pending_path = f.read().strip()
-                    except Exception:
-                        pass
-
-                logging.warning(f"Previous update failed: {error_msg}")
-
-                # Schedule dialog to show after UI is initialized
-                self._pending_update_error = error_msg
-                self._pending_update_path = pending_path
-
-                # Cleanup status files (but keep pending for MoveFileEx if needed)
-                for f in [error_file, success_file, expected_file]:
-                    if os.path.exists(f):
-                        try:
-                            os.remove(f)
-                        except Exception:
-                            pass
-
-            elif os.path.exists(success_file):
-                # Check if version matches expected
-                expected_ver = None
-                if os.path.exists(expected_file):
-                    try:
-                        with open(expected_file, 'r') as f:
-                            expected_ver = f.read().strip()
-                    except Exception:
-                        pass
-
-                if expected_ver:
-                    if VERSION == expected_ver:
-                        # Success! Schedule toast after UI initialized
-                        logging.info(f"Update to v{expected_ver} successful!")
-                        self._pending_update_success_version = expected_ver
-                    else:
-                        # Version mismatch - update failed silently
-                        logging.error(f"Update verification failed: Expected v{expected_ver} but running v{VERSION}")
-                        self._pending_update_error = f"Expected v{expected_ver} but running v{VERSION}"
-                        self._pending_update_path = None
-
-                # Cleanup all status files
-                for f in status_files:
-                    if os.path.exists(f):
-                        try:
-                            os.remove(f)
-                        except Exception:
-                            pass
-
-        except Exception as e:
-            logging.warning(f"Error checking update status: {e}")
-
-    def _show_pending_update_dialogs(self) -> None:
-        """Show any pending update dialogs after main window is ready.
-
-        Called after the main UI components are initialized.
-        """
-        # Show update success toast
-        if hasattr(self, '_pending_update_success_version'):
-            version = self._pending_update_success_version
-            del self._pending_update_success_version
-            self.root.after(2000, lambda: self._show_update_success_toast(version))
-
-        # Show update failed dialog
-        if hasattr(self, '_pending_update_error'):
-            error_msg = self._pending_update_error
-            pending_path = getattr(self, '_pending_update_path', None)
-            del self._pending_update_error
-            if hasattr(self, '_pending_update_path'):
-                del self._pending_update_path
-            self.root.after(1000, lambda: self._show_update_failed_dialog(error_msg, pending_path))
-
-    def _show_update_success_toast(self, version: str) -> None:
-        """Show success toast after update.
-
-        Args:
-            version: The version that was successfully installed
-        """
-        self.toast.show(
-            "Update Successful",
-            f"CrossTrans has been updated to v{version}",
-            duration=5000
-        )
-
-    def _show_update_failed_dialog(self, error_msg: str, pending_path: str = None) -> None:
-        """Show dialog when update failed, offering reboot fallback.
-
-        Args:
-            error_msg: Error message from the failed update
-            pending_path: Path to the pending update file (for MoveFileEx fallback)
-        """
-        from src.ui.dialogs import UpdateFailedDialog
-
-        dialog = UpdateFailedDialog(
-            self.root,
-            error_msg,
-            pending_path,
-            current_exe=sys.executable
-        )
-
-        if dialog.result == 'reboot' and pending_path:
-            # User chose to schedule update for reboot
-            from src.utils.updates import AutoUpdater
-            updater = AutoUpdater()
-            result = updater.schedule_update_on_reboot(pending_path, sys.executable)
-
-            if result['success']:
-                self.toast.show(
-                    "Update Scheduled",
-                    "Update will be applied when you restart Windows.",
-                    duration=5000
-                )
-                # Clean up pending file marker
-                pending_file = os.path.join(
-                    os.environ.get('TEMP', ''),
-                    'crosstrans_update_pending.txt'
-                )
-                if os.path.exists(pending_file):
-                    try:
-                        os.remove(pending_file)
-                    except Exception:
-                        pass
-            else:
-                self.toast.show(
-                    "Scheduling Failed",
-                    result.get('message', 'Could not schedule update'),
-                    duration=5000,
-                    toast_type=ToastType.ERROR
-                )
-
-        elif dialog.result == 'manual':
-            # Open GitHub releases page
-            import webbrowser
-            from src.constants import GITHUB_REPO
-            webbrowser.open(f"https://github.com/{GITHUB_REPO}/releases/latest")
-
-    def _schedule_trial_recheck(self):
-        """Schedule re-check of API keys when in forced trial mode."""
-        if not self.config.get_trial_mode_forced():
-            return
-
-        # Check if we need to re-test (24h since last check)
-        last_check = self.config.get_trial_last_api_check()
-        if last_check:
-            try:
-                from datetime import datetime, timedelta
-                last_dt = datetime.fromisoformat(last_check)
-                if datetime.now() - last_dt >= timedelta(hours=24):
-                    # Time to re-check
-                    self.root.after(5000, self._recheck_api_keys_for_trial)
-            except Exception as e:
-                logging.warning(f"Failed to parse last API check time: {e}")
-
-        # Schedule next check in 1 hour
-        self.root.after(3600000, self._schedule_trial_recheck)  # 1 hour
-
-    def _recheck_api_keys_for_trial(self):
-        """Re-check API keys and disable trial mode if any works."""
-        from datetime import datetime
-        from src.core.api_manager import AIAPIManager
-
-        logging.info("Re-checking API keys for trial mode...")
-
-        api_keys = self.config.get_api_keys()
-        if not api_keys:
-            return
-
-        manager = AIAPIManager()
-        any_working = False
-
-        for key_config in api_keys:
-            key = key_config.get('api_key', '').strip()
-            if not key:
-                continue
-
-            model = key_config.get('model_name', '').strip() or 'Auto'
-            provider = key_config.get('provider', 'Auto')
-
-            try:
-                if manager.test_connection(model, key, provider):
-                    any_working = True
-                    self.config.api_status_cache[key] = True
-                    logging.info(f"API key now working: {key[:8]}...")
-                    break
-            except Exception:
-                self.config.api_status_cache[key] = False
-
-        # Update last check time
-        self.config.set_trial_last_api_check(datetime.now().isoformat())
-
-        if any_working:
-            # Disable trial mode
-            self.config.set_trial_mode_forced(False)
-            logging.info("API key now working - disabled forced trial mode")
-
-            # Show toast notification
-            self.toast.show(
-                "API Key Restored",
-                "Your API key is now working. Trial mode disabled.",
-                duration=5000
-            )
-
-    def _startup_update_check(self) -> None:
-        """Silent update check on startup (non-intrusive).
-
-        Checks for updates in background thread after app initialization.
-        Shows toast notification if update available.
-        """
-        def check_updates():
-            import time
-            time.sleep(STARTUP_UPDATE_DELAY)  # Wait for app to fully load
-
-            logging.info("Auto-checking for updates on startup...")
-            updater = AutoUpdater()
-            result = updater.check_update()
-
-            if result.get('has_update'):
-                new_version = result['version']
-                logging.info(f"Update available: {new_version}")
-                # Show non-intrusive toast notification
-                self.root.after(0, lambda: self._show_update_toast(new_version))
-            else:
-                logging.info("No update available on startup check")
-
-        threading.Thread(
-            target=check_updates,
-            daemon=True,
-            name=THREAD_NAMES['startup']
-        ).start()
-
-    def _show_update_toast(self, new_version: str) -> None:
-        """Show non-intrusive update notification as toast.
-
-        Args:
-            new_version: Version number of the available update (e.g., "1.9.7")
-        """
-        from src.ui.toast import show_toast
-        show_toast(
-            self.root,
-            "Update Available",
-            f"CrossTrans v{new_version} is available!\nOpen Settings to update.",
-            duration=UPDATE_TOAST_DURATION
-        )
-
     def _on_hotkey_translate(self, language: str):
         """Handle hotkey translation request.
 
@@ -604,146 +280,12 @@ class TranslatorApp:
         self.translation_service.do_translation(language)
 
     def _on_screenshot_hotkey(self):
-        """Handle screenshot hotkey press (Win+Alt+S).
-
-        Checks if vision capability is available:
-        - If NO vision API → Shows notification with guidance + clickable link to Settings
-        - If vision API available → Opens screenshot crop overlay
-        """
-        # Check if any API has vision capability
-        has_vision = self.config.has_any_vision_capable()
-
-        if not has_vision:
-            # Show notification explaining the situation with action link
-            self._show_vision_not_available_notification()
-            return
-
-        # Get screenshot target language from settings
-        screenshot_lang = self.config.get_screenshot_target_language()
-        if screenshot_lang == "Auto":
-            screenshot_lang = self.selected_language
-
-        # Store for later use in _on_screenshot_captured
-        self._screenshot_target_language = screenshot_lang
-
-        # Vision available - proceed with screenshot capture
-        logging.info(f"Starting screenshot capture for {screenshot_lang} translation")
-        self.screenshot_capture.capture_region(self._on_screenshot_captured)
-
-    def _show_vision_not_available_notification(self):
-        """Show toast notification when vision capability is not available.
-
-        Includes clickable link to open Settings → API Key tab.
-        """
-        # Check if user has any API keys at all
-        api_keys = self.config.get_api_keys()
-        has_any_keys = any(k.get('api_key', '').strip() for k in api_keys)
-
-        # Callback to open Settings → API Key tab
-        def open_api_key_settings():
-            self._show_settings_tab("API Key")
-
-        if not has_any_keys:
-            # No API keys at all - using Trial Mode
-            self.toast.show_warning_with_action(
-                "Screenshot translation requires an API key.\n"
-                "Trial Mode does not support image processing.\n"
-                "Add a vision-capable API key (GPT-4o, Gemini Pro Vision, Claude 3, etc.)",
-                "Open API Key Settings",
-                open_api_key_settings
-            )
-        else:
-            # Has API keys but none support vision
-            self.toast.show_warning_with_action(
-                "No vision-capable API key found.\n"
-                "Your current API keys don't support image processing.\n"
-                "Add a vision model: GPT-4o, Gemini Pro Vision, Claude 3 Sonnet, etc.",
-                "Open API Key Settings",
-                open_api_key_settings
-            )
-
-        logging.info("Screenshot hotkey pressed but no vision capability available")
-
-    def _on_screenshot_captured(self, image_path: str):
-        """Handle captured screenshot image.
-
-        Args:
-            image_path: Path to captured screenshot PNG file, or None if cancelled
-        """
-        if not image_path:
-            logging.info("Screenshot capture cancelled by user")
-            return
-
-        logging.info(f"Screenshot captured: {image_path}")
-
-        # Save image path for "Open Translator" feature (DON'T delete immediately)
-        self._pending_screenshot_path = image_path
-
-        # Get target language (saved in _on_screenshot_hotkey)
-        target_lang = self._screenshot_target_language or self.selected_language
-
-        # Show loading indicator
-        self.tooltip_manager.capture_mouse_position()
-        self.tooltip_manager.show_loading(f"Screenshot → {target_lang}")
-
-        # Process in background thread
-        def process_screenshot():
-            try:
-                # Use multimodal translation with the captured image
-                prompt = f"""Extract and translate ALL visible text from this image to {target_lang}.
-
-Instructions:
-1. Perform OCR - extract ALL text exactly as it appears
-2. Translate the extracted text
-3. Return format:
-===ORIGINAL===
-[All extracted text]
-
-===TRANSLATION===
-[Translated text in {target_lang}]"""
-
-                result = self.translation_service.api_manager.translate_multimodal(
-                    prompt, [image_path], {}
-                )
-
-                # Parse result
-                if "===ORIGINAL===" in result and "===TRANSLATION===" in result:
-                    parts = result.split("===TRANSLATION===")
-                    original = parts[0].replace("===ORIGINAL===", "").strip()
-                    translated = parts[1].strip() if len(parts) > 1 else ""
-                else:
-                    original = "[Screenshot]"
-                    translated = result
-
-                # Get trial info
-                trial_info = self.translation_service.get_trial_info()
-
-                # Show result in tooltip (image path preserved for "Open Translator")
-                self.root.after(0, lambda: self.show_tooltip(original, translated, target_lang, trial_info))
-
-                # Save to history
-                self.translation_service.history_manager.add_entry(
-                    "[Screenshot OCR]", translated, target_lang, source_type="screenshot"
-                )
-
-            except Exception as e:
-                logging.error(f"Screenshot translation failed: {e}")
-                self.root.after(0, lambda: self.toast.show_error(f"Screenshot translation failed: {str(e)}"))
-                # Cleanup on error
-                self._cleanup_pending_screenshot()
-
-        import threading
-        threading.Thread(target=process_screenshot, daemon=True).start()
+        """Handle screenshot hotkey press (Win+Alt+S)."""
+        self.screenshot_handler.handle_hotkey()
 
     def _cleanup_pending_screenshot(self):
         """Clean up pending screenshot file if exists."""
-        if self._pending_screenshot_path:
-            try:
-                if os.path.exists(self._pending_screenshot_path):
-                    os.unlink(self._pending_screenshot_path)
-            except Exception:
-                pass
-            self._pending_screenshot_path = None
+        self.screenshot_handler.cleanup_pending_screenshot()
 
     def show_tooltip(self, original: str, translated: str, target_lang: str, trial_info: dict = None):
         """Show compact tooltip near mouse cursor with translation result.
@@ -782,7 +324,7 @@ Instructions:
         self.close_tooltip()
 
         # Check if there's a pending screenshot to load into attachments
-        pending_image = self._pending_screenshot_path
+        pending_image = self.screenshot_handler.get_pending_screenshot()
 
         self.show_popup(
             self.current_original,
@@ -792,7 +334,7 @@ Instructions:
         )
 
         # Clear pending screenshot (will be managed by AttachmentArea now)
-        self._pending_screenshot_path = None
+        self.screenshot_handler.clear_pending_screenshot()
 
     def _on_tooltip_dictionary_lookup(self, words: list, target_lang: str):
         """Handle dictionary lookup from tooltip.
@@ -1551,141 +1093,7 @@ IMPORTANT: Translate ALL text to {self.selected_language}. Process ALL files. Ex
     def _open_expanded_translation(self):
         """Open translation in expanded fullscreen window."""
         translated = self.trans_text.get('1.0', tk.END).strip()
-        if not translated:
-            self.toast.show_warning("No translation to expand")
-            return
-
-        # Create expanded window
-        expanded = tk.Toplevel(self.root)
-        expanded.title(f"Translation - {self.selected_language}")
-        expanded.configure(bg='#1e1e1e')
-
-        # Get screen dimensions for fullscreen
-        screen_width = expanded.winfo_screenwidth()
-        screen_height = expanded.winfo_screenheight()
-
-        # Start with 80% of screen size, centered
-        window_width = int(screen_width * 0.8)
-        window_height = int(screen_height * 0.8)
-        x = (screen_width - window_width) // 2
-        y = (screen_height - window_height) // 2
-        expanded.geometry(f"{window_width}x{window_height}+{x}+{y}")
-
-        # Apply dark title bar (Windows 10/11)
-        expanded.update_idletasks()
-        set_dark_title_bar(expanded)
-
-        # Allow resizing
-        expanded.minsize(600, 400)
-
-        # Main frame with padding
-        main_frame = ttk.Frame(expanded, padding=15)
-        main_frame.pack(fill=BOTH, expand=True)
-
-        # Header with title and controls
-        header_frame = ttk.Frame(main_frame)
-        header_frame.pack(fill=tk.X, pady=(0, 10))
-
-        # Title
-        title_text = f"Translation to {self.selected_language}"
-        ttk.Label(header_frame, text=title_text, font=('Segoe UI', 14, 'bold')).pack(side=tk.LEFT)
-
-        # Window control buttons
-        btn_frame = ttk.Frame(header_frame)
-        btn_frame.pack(side=tk.RIGHT)
-
-        # Fullscreen toggle button
-        is_fullscreen = [False]  # Use list to allow modification in nested function
-
-        def toggle_fullscreen():
-            is_fullscreen[0] = not is_fullscreen[0]
-            expanded.attributes('-fullscreen', is_fullscreen[0])
-            if is_fullscreen[0]:
-                fullscreen_btn.configure(text="⧉ Window")
-            else:
-                fullscreen_btn.configure(text="⛶ Fullscreen")
-
-        fullscreen_kwargs = {"text": "⛶ Fullscreen", "command": toggle_fullscreen, "width": 12}
-        if HAS_TTKBOOTSTRAP:
-            fullscreen_kwargs["bootstyle"] = "info-outline"
-        fullscreen_btn = ttk.Button(btn_frame, **fullscreen_kwargs)
-        fullscreen_btn.pack(side=tk.LEFT, padx=5)
-
-        # Copy button
-        def copy_expanded():
-            text = expanded_text.get('1.0', tk.END).strip()
-            if text:
-                pyperclip.copy(text)
-                copy_exp_btn.configure(text="✓ Copied!")
-                self.toast.show_success("Copied to clipboard!")
-                expanded.after(1500, lambda: copy_exp_btn.configure(text="📋 Copy"))
-
-        copy_kwargs = {"text": "📋 Copy", "command": copy_expanded, "width": 10}
-        if HAS_TTKBOOTSTRAP:
-            copy_kwargs["bootstyle"] = "primary-outline"
-        copy_exp_btn = ttk.Button(btn_frame, **copy_kwargs)
-        copy_exp_btn.pack(side=tk.LEFT, padx=5)
-
-        # Close button
-        close_kwargs = {"text": "✕ Close", "command": expanded.destroy, "width": 10}
-        if HAS_TTKBOOTSTRAP:
-            close_kwargs["bootstyle"] = "secondary-outline"
-        ttk.Button(btn_frame, **close_kwargs).pack(side=tk.LEFT, padx=5)
-
-        # Text area (no scrollbar, use mouse wheel)
-        text_frame = ttk.Frame(main_frame)
-        text_frame.pack(fill=BOTH, expand=True)
-
-        # Text widget - editable for selection/copy
-        expanded_text = tk.Text(text_frame, wrap=tk.WORD,
-                                bg='#2b2b2b', fg='#ffffff',
-                                font=('Segoe UI', 14), relief='flat',
-                                padx=20, pady=20,
-                                insertbackground='white',
-                                selectbackground='#0d6efd',
-                                selectforeground='white')
-        expanded_text.insert('1.0', translated)
-        expanded_text.pack(fill=BOTH, expand=True)
-
-        # Mouse wheel scroll only
-        expanded_text.bind('<MouseWheel>',
-            lambda e: expanded_text.yview_scroll(int(-1*(e.delta/120)), "units"))
-
-        # Keyboard shortcuts
-        expanded.bind('<Escape>', lambda e: expanded.destroy())
-        expanded.bind('<F11>', lambda e: toggle_fullscreen())
-        expanded.bind('<Control-c>', lambda e: copy_expanded())
-
-        # Status bar
-        status_frame = ttk.Frame(main_frame)
-        status_frame.pack(fill=tk.X, pady=(10, 0))
-
-        # Character/word count
-        def update_status(*args):
-            text = expanded_text.get('1.0', 'end-1c')
-            chars = len(text)
-            words = len(text.split())
-            lines = text.count('\n') + 1
-            status_label.configure(text=f"Characters: {chars:,} | Words: {words:,} | Lines: {lines:,}")
-
-        status_label = ttk.Label(status_frame, text="", font=('Segoe UI', 9))
-        status_label.pack(side=tk.LEFT)
-        update_status()
-
-        # Shortcut hints
-        ttk.Label(status_frame, text="F11: Fullscreen | Esc: Close | Ctrl+C: Copy",
-                  font=('Segoe UI', 9), foreground='#888888').pack(side=tk.RIGHT)
-
-        # Update status on text change
-        expanded_text.bind('<KeyRelease>', update_status)
-
-        # Bring window to front and focus it
-        expanded.lift()
-        expanded.attributes('-topmost', True)
-        expanded.update()
-        expanded.attributes('-topmost', False)
-        expanded.focus_force()
-        expanded_text.focus_set()
+        self.expanded_window.show(translated, self.selected_language)
 
     def _copy_translation(self):
         """Copy translation to clipboard."""
@@ -1699,113 +1107,14 @@ IMPORTANT: Translate ALL text to {self.selected_language}. Process ALL files. Ex
         self.popup.after(1000, lambda: self.copy_btn.configure(text="Copy"))
 
     def _update_dict_button_state(self):
-        """Update Dictionary button state based on NLP availability.
-
-        Button keeps same visual appearance (reddish-brown color) whether
-        enabled or disabled. Only interaction changes.
-        """
-        if not hasattr(self, 'dict_btn') or not self.dict_btn:
-            return
-
-        self._dict_btn_enabled = nlp_manager.is_any_installed()
-
-        try:
-            if self._dict_btn_enabled:
-                self.dict_btn.configure(cursor='hand2')
-            else:
-                self.dict_btn.configure(cursor='arrow')
-            # Unbind any previous tooltips
-            self.dict_btn.unbind('<Enter>')
-            self.dict_btn.unbind('<Leave>')
-        except tk.TclError:
-            pass  # Widget destroyed
+        """Update Dictionary button state based on NLP availability."""
+        if hasattr(self, 'dict_btn') and self.dict_btn:
+            self.dictionary_popup.update_button_state(self.dict_btn)
 
     def _open_dictionary_popup(self):
         """Open dictionary popup window with word buttons for original text."""
-        # Check if button is enabled (NLP installed)
-        if hasattr(self, '_dict_btn_enabled') and not self._dict_btn_enabled:
-            self._show_nlp_not_installed_dialog()
-            return
-
         original = self.original_text.get('1.0', tk.END).strip()
-        if not original:
-            self.toast.show_warning("No text to analyze")
-            return
-
-        # Double-check NLP is installed
-        if not nlp_manager.is_any_installed():
-            self._show_nlp_not_installed_dialog()
-            return
-
-        # Detect language
-        detected_lang, confidence = nlp_manager.detect_language(original)
-        CONFIDENCE_THRESHOLD = 0.7
-
-        # Check if detection is confident and NLP is installed for that language
-        if confidence >= CONFIDENCE_THRESHOLD and nlp_manager.is_installed(detected_lang):
-            # Auto-proceed with detected language
-            self._open_dictionary_with_language(original, detected_lang)
-        else:
-            # Determine if language was detected but not installed
-            detected_but_not_installed = (
-                confidence >= CONFIDENCE_THRESHOLD and
-                detected_lang and
-                not nlp_manager.is_installed(detected_lang)
-            )
-            # Show language selection dialog with context
-            self._show_language_selection_dialog(
-                original,
-                detected_lang if confidence > 0.3 else None,
-                detected_but_not_installed=detected_but_not_installed
-            )
-
-    def _show_nlp_not_installed_dialog(self):
-        """Show dialog when no NLP language pack is installed."""
-        dialog = tk.Toplevel(self.popup)
-        dialog.title("No Language Pack Installed")
-        dialog.configure(bg='#2b2b2b')
-        dialog.transient(self.popup)
-        dialog.grab_set()
-
-        # Center on screen - increased height for button visibility
-        dialog.update_idletasks()
-        w, h = 400, 220
-        x = (dialog.winfo_screenwidth() - w) // 2
-        y = (dialog.winfo_screenheight() - h) // 2
-        dialog.geometry(f"{w}x{h}+{x}+{y}")
-
-        set_dark_title_bar(dialog)
-
-        # Content
-        frame = ttk.Frame(dialog, padding=20)
-        frame.pack(fill=BOTH, expand=True)
-
-        ttk.Label(frame, text="⚠️ No Language Pack Installed",
-                  font=('Segoe UI', 12, 'bold')).pack(pady=(0, 10))
-
-        ttk.Label(frame, text="Dictionary mode requires at least one NLP language pack.\n"
-                             "Install a language pack in Settings → Dictionary tab.",
-                  font=('Segoe UI', 10), justify='center').pack(pady=(0, 15))
-
-        # Buttons
-        btn_frame = ttk.Frame(frame)
-        btn_frame.pack(fill=X)
-
-        def open_settings():
-            dialog.destroy()
-            self._show_settings_tab("Dictionary")
-
-        open_btn_kwargs = {"text": "Open Dictionary Settings", "command": open_settings, "width": 22}
-        if HAS_TTKBOOTSTRAP:
-            open_btn_kwargs["bootstyle"] = "primary"
-        ttk.Button(btn_frame, **open_btn_kwargs).pack(side=LEFT, padx=5)
-
-        cancel_kwargs = {"text": "Cancel", "command": dialog.destroy, "width": 10}
-        if HAS_TTKBOOTSTRAP:
-            cancel_kwargs["bootstyle"] = "secondary"
-        ttk.Button(btn_frame, **cancel_kwargs).pack(side=RIGHT, padx=5)
-
-        dialog.bind('<Escape>', lambda e: dialog.destroy())
+        self.dictionary_popup.open_from_text(original, self.popup)
 
     def _show_settings_dictionary_tab(self):
         """Open settings window and navigate directly to Dictionary tab.
@@ -1847,294 +1156,6 @@ IMPORTANT: Translate ALL text to {self.selected_language}. Process ALL files. Ex
             self.settings_window.open_dictionary_tab()
             # Re-focus window after switching tab
             self._focus_settings_window()
-
-    def _show_language_selection_dialog(self, original_text: str, suggested_lang: str = None,
-                                         detected_but_not_installed: bool = False):
-        """Show dialog to select source language for dictionary mode.
-
-        Args:
-            original_text: Text to analyze
-            suggested_lang: Suggested language from detection
-            detected_but_not_installed: True if language was detected but pack not installed
-        """
-        installed_languages = nlp_manager.get_installed_languages()
-        if not installed_languages:
-            self._show_nlp_not_installed_dialog()
-            return
-
-        dialog = tk.Toplevel(self.popup)
-        dialog.title("Select Source Language")
-        dialog.configure(bg='#2b2b2b')
-        dialog.transient(self.popup)
-        dialog.grab_set()
-
-        # Center on screen - taller if showing install prompt
-        dialog.update_idletasks()
-        w = 400
-        h = 340 if detected_but_not_installed else 280
-        x = (dialog.winfo_screenwidth() - w) // 2
-        y = (dialog.winfo_screenheight() - h) // 2
-        dialog.geometry(f"{w}x{h}+{x}+{y}")
-
-        set_dark_title_bar(dialog)
-
-        # Content
-        frame = ttk.Frame(dialog, padding=20)
-        frame.pack(fill=BOTH, expand=True)
-
-        # Open Settings → Dictionary tab
-        def open_settings_dict():
-            dialog.grab_release()  # Release grab before destroying
-            dialog.destroy()
-            # Delay for focus settle, then open settings
-            self.root.after(50, self.show_settings)
-            self.root.after(550, lambda: self._open_settings_dictionary_tab())
-
-        if detected_but_not_installed and suggested_lang:
-            # Case: Language detected but not installed - show prominent install option
-            ttk.Label(frame, text=f"📖 Detected: {suggested_lang}",
-                      font=('Segoe UI', 11, 'bold')).pack(pady=(0, 5))
-
-            # Warning that pack not installed
-            warning_frame = ttk.Frame(frame)
-            warning_frame.pack(fill=X, pady=(0, 10))
-            ttk.Label(warning_frame, text=f"⚠️ {suggested_lang} language pack is not installed.",
-                      font=('Segoe UI', 10), foreground='#ffaa00').pack(anchor='w')
-
-            # Install button - prominent
-            install_frame = ttk.Frame(frame)
-            install_frame.pack(fill=X, pady=(0, 10))
-
-            install_btn_kwargs = {
-                "text": f"📥 Install {suggested_lang} Pack",
-                "command": open_settings_dict,
-                "width": 25
-            }
-            if HAS_TTKBOOTSTRAP:
-                install_btn_kwargs["bootstyle"] = "info"
-            ttk.Button(install_frame, **install_btn_kwargs).pack(pady=5)
-
-            # Separator
-            ttk.Separator(frame, orient='horizontal').pack(fill=X, pady=5)
-
-            # Alternative: select from installed
-            ttk.Label(frame, text="Or select from installed languages:",
-                      font=('Segoe UI', 10), foreground='#888888').pack(anchor='w', pady=(5, 5))
-        else:
-            # Case: Cannot detect language - show generic message
-            ttk.Label(frame, text="⚠️ Cannot detect language",
-                      font=('Segoe UI', 11, 'bold')).pack(pady=(0, 10))
-
-            ttk.Label(frame, text="Select the source language:",
-                      font=('Segoe UI', 10)).pack(anchor='w', pady=(0, 5))
-
-        # Combobox for language selection
-        lang_var = tk.StringVar()
-        lang_combo = ttk.Combobox(frame, textvariable=lang_var, values=installed_languages,
-                                  font=('Segoe UI', 10), state='readonly')
-        lang_combo.pack(fill=X, pady=(0, 5))
-
-        # Set default selection
-        if suggested_lang and suggested_lang in installed_languages:
-            lang_var.set(suggested_lang)
-        elif installed_languages:
-            lang_var.set(installed_languages[0])
-
-        if not detected_but_not_installed:
-            ttk.Label(frame, text="Only installed language packs are shown.",
-                      font=('Segoe UI', 9), foreground='#888888').pack(anchor='w', pady=(0, 10))
-
-            # Install more link
-            install_link = tk.Label(frame, text="Install more languages →", fg='#4da6ff',
-                                   bg='#2b2b2b', font=('Segoe UI', 9, 'underline'), cursor='hand2')
-            install_link.pack(anchor='w')
-            install_link.bind('<Button-1>', lambda e: open_settings_dict())
-
-        # Buttons
-        btn_frame = ttk.Frame(frame)
-        btn_frame.pack(fill=X, pady=(15, 0))
-
-        def confirm():
-            selected = lang_var.get()
-            if selected:
-                dialog.grab_release()  # Release grab before destroying
-                dialog.destroy()
-                # Delay for focus settle before opening dictionary popup
-                self.root.after(50, lambda: self._open_dictionary_with_language(original_text, selected))
-
-        def cancel():
-            dialog.grab_release()
-            dialog.destroy()
-
-        confirm_kwargs = {"text": "Confirm", "command": confirm, "width": 12}
-        if HAS_TTKBOOTSTRAP:
-            confirm_kwargs["bootstyle"] = "primary"
-        ttk.Button(btn_frame, **confirm_kwargs).pack(side=LEFT, padx=5)
-
-        cancel_kwargs = {"text": "Cancel", "command": cancel, "width": 10}
-        if HAS_TTKBOOTSTRAP:
-            cancel_kwargs["bootstyle"] = "secondary"
-        ttk.Button(btn_frame, **cancel_kwargs).pack(side=RIGHT, padx=5)
-
-        dialog.bind('<Escape>', lambda e: cancel())
-        dialog.bind('<Return>', lambda e: confirm())
-
-    def _open_dictionary_with_language(self, original: str, language: str):
-        """Open dictionary popup with specified language for NLP tokenization."""
-        from src.ui.dictionary_mode import WordButtonFrame
-        from src.ui.tooltip import get_monitor_work_area
-
-        # Get current target language from UI selection (not config)
-        target_language = self.selected_language
-
-        # Build title with trial info if applicable
-        try:
-            trial_info = self.translation_service.get_trial_info()
-            if trial_info and trial_info.get('is_trial'):
-                remaining = trial_info.get('remaining', 0)
-                daily_limit = trial_info.get('daily_limit', 50)
-                title = f"Dictionary ({language} → {target_language}) - Trial Mode ({remaining}/{daily_limit} left)"
-            else:
-                title = f"Dictionary ({language} → {target_language})"
-        except Exception:
-            title = f"Dictionary ({language} → {target_language})"
-
-        # Create popup window
-        dict_popup = tk.Toplevel(self.root)
-        dict_popup.title(title)
-        dict_popup.configure(bg='#2b2b2b')
-        dict_popup.attributes('-topmost', True)
-
-        # Get work area (excludes taskbar)
-        mouse_x = self.root.winfo_pointerx()
-        mouse_y = self.root.winfo_pointery()
-        work_area = get_monitor_work_area(mouse_x, mouse_y)
-
-        if work_area:
-            work_left, work_top, work_right, work_bottom = work_area
-        else:
-            work_left, work_top = 0, 0
-            work_right = self.root.winfo_screenwidth()
-            work_bottom = self.root.winfo_screenheight() - 50
-
-        # Window size and position (centered in work area)
-        window_width = 700
-        window_height = 350
-        margin = 10
-
-        # Ensure height fits in work area
-        max_height = work_bottom - work_top - 2 * margin
-        if window_height > max_height:
-            window_height = max_height
-
-        x = work_left + (work_right - work_left - window_width) // 2
-        y = work_top + (work_bottom - work_top - window_height) // 2
-
-        dict_popup.geometry(f"{window_width}x{window_height}+{x}+{y}")
-
-        # Apply dark title bar
-        dict_popup.update_idletasks()
-        set_dark_title_bar(dict_popup)
-
-        # Bring to front and focus (after window fully configured)
-        dict_popup.lift()
-        dict_popup.focus_force()
-        dict_popup.after(200, lambda: dict_popup.attributes('-topmost', False) if dict_popup.winfo_exists() else None)
-
-        # Main frame
-        main_frame = ttk.Frame(dict_popup, padding=15)
-        main_frame.pack(fill=BOTH, expand=True)
-
-        # Header with language info
-        ttk.Label(main_frame, text=f"Select words to look up ({language} NLP):",
-                  font=('Segoe UI', 10)).pack(anchor='w', pady=(0, 10))
-
-        # Track expanded state for toggle
-        expanded_state = [False]
-        original_geometry = [f"{window_width}x{window_height}+{x}+{y}"]
-
-        # Expand/Collapse function
-        def expand_dictionary():
-            if expanded_state[0]:
-                # Collapse: restore original size
-                dict_popup.geometry(original_geometry[0])
-                expanded_state[0] = False
-                dict_frame.expand_btn.configure(text="⛶ Expand")
-            else:
-                # Expand: larger size
-                expanded_state[0] = True
-                dict_popup.geometry("1000x700")
-                # Center on work area
-                dict_popup.update_idletasks()
-                w = dict_popup.winfo_width()
-                h = dict_popup.winfo_height()
-                cx = work_left + (work_right - work_left - w) // 2
-                cy = work_top + (work_bottom - work_top - h) // 2
-                dict_popup.geometry(f"{w}x{h}+{cx}+{cy}")
-                dict_frame.expand_btn.configure(text="⛶ Collapse")
-
-        # Word button frame with language for NLP tokenization
-        def on_lookup(selected_words):
-            self._do_dictionary_lookup(selected_words)
-
-        def on_no_selection():
-            self.toast.show_warning_with_shake("Please select a word first")
-
-        dict_frame = WordButtonFrame(
-            main_frame,
-            original,
-            on_selection_change=lambda t: None,
-            on_lookup=on_lookup,
-            on_expand=expand_dictionary,
-            on_no_selection=on_no_selection,
-            language=language  # Pass language for NLP tokenization
-        )
-        dict_frame.set_exit_callback(dict_popup.destroy)
-        dict_frame.pack(fill=BOTH, expand=True)
-
-        # Store reference for animation control (so stop_dictionary_animation() works)
-        self.tooltip_manager._dict_popup_frame = dict_frame
-
-        # Close on Escape
-        dict_popup.bind('<Escape>', lambda e: dict_popup.destroy())
-        dict_popup.focus_force()
-
-    def _do_dictionary_lookup(self, words: list):
-        """Perform dictionary lookup for selected words.
-
-        Uses batch lookup (single API call) for efficiency.
-        """
-        if not words:
-            return
-
-        # Get target language
-        target_lang = self.selected_language
-
-        # Show loading toast
-        display_text = ", ".join(words[:3]) + ("..." if len(words) > 3 else "")
-        self.toast.show_info(f"Looking up {len(words)} word(s): {display_text}")
-
-        # Perform lookup in background
-        def do_lookup():
-            try:
-                # Single API call for all words (optimized batch lookup)
-                result = self.translation_service.dictionary_lookup(words, target_lang)
-                # Get trial info after API call (quota may have changed)
-                trial_info = self.translation_service.get_trial_info()
-                # Show result in tooltip (pass words for highlighting)
-                self.popup.after(0, lambda: self._show_dictionary_result(result, target_lang, trial_info, words))
-            except Exception as e:
-                self.popup.after(0, lambda: self.toast.show_error(f"Lookup failed: {str(e)}"))
-
-        import threading
-        threading.Thread(target=do_lookup, daemon=True).start()
-
-    def _show_dictionary_result(self, result: str, target_lang: str, trial_info: dict = None,
-                                looked_up_words: list = None):
-        """Show dictionary lookup result in SEPARATE window."""
-        # Use tooltip manager to show result in SEPARATE dictionary window
-        self.tooltip_manager.capture_mouse_position()
-        self.tooltip_manager.show_dictionary_result(result, target_lang, trial_info, looked_up_words)
 
     def _open_in_gemini(self):
         """Open Gemini web with translation prompt."""
@@ -2408,15 +1429,15 @@ IMPORTANT: Translate ALL text to {self.selected_language}. Process ALL files. Ex
 
     def _show_trial_exhausted(self):
         """Show trial quota exhausted dialog."""
-        TrialExhaustedDialog(self.root, on_open_settings_tab=self._show_settings_tab)
+        self.trial_manager.show_trial_exhausted()
 
     def _show_trial_feature_blocked(self, feature_name: str):
         """Show dialog when user tries to use a feature disabled in trial mode."""
-        TrialFeatureDialog(self.root, feature_name=feature_name, on_open_settings_tab=self._show_settings_tab)
+        self.trial_manager.show_feature_blocked(feature_name)
 
     def is_trial_mode(self) -> bool:
         """Check if currently in trial mode."""
-        return self.translation_service.is_trial_mode()
+        return self.trial_manager.is_trial_mode()
 
     def _startup_api_check(self):
         """Perform a one-time API check on startup and cache results."""

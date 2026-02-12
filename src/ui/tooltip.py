@@ -3,7 +3,9 @@ Tooltip Manager for CrossTrans.
 Handles translation result tooltips and loading indicators.
 """
 import ctypes
+import logging
 import math
+import time
 import tkinter as tk
 from tkinter import BOTH, X, LEFT, RIGHT, TOP, BOTTOM
 from tkinter import font
@@ -123,6 +125,7 @@ class TooltipManager:
         self._loading_animation_step = 0
         self._loading_label = None
         self._loading_target_lang = ""
+        self._loading_start_time = 0
 
         # Callbacks
         self._on_copy: Optional[Callable[[], None]] = None
@@ -192,6 +195,7 @@ class TooltipManager:
         # Start loading animation
         self._loading_animation_running = True
         self._loading_animation_step = 0
+        self._loading_start_time = time.time()
         self._animate_loading()
 
     def _animate_loading(self):
@@ -201,6 +205,14 @@ class TooltipManager:
 
         if not self.tooltip or not self._loading_label:
             self._loading_animation_running = False
+            return
+
+        # Safety timeout: auto-close after 15s to prevent infinite animation
+        LOADING_TIMEOUT_SECONDS = 15
+        if self._loading_start_time and time.time() - self._loading_start_time > LOADING_TIMEOUT_SECONDS:
+            logging.warning(f"Loading animation timed out after {LOADING_TIMEOUT_SECONDS}s, auto-closing")
+            self._loading_animation_running = False
+            self.close()
             return
 
         try:
@@ -1028,6 +1040,7 @@ class TooltipManager:
         # Stop loading animation
         self._loading_animation_running = False
         self._loading_label = None
+        self._loading_start_time = 0
 
         # Clean up dictionary mode first
         if self._dict_frame:
